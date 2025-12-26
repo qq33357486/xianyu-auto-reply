@@ -97,7 +97,7 @@ class AIReplyEngine:
         model_name = settings.get('model_name', '').lower()
         return 'gemini' in model_name
 
-    def _call_dashscope_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+    def _call_dashscope_api(self, settings: dict, messages: list, max_tokens: int = 1024, temperature: float = 0.7) -> str:
         """调用DashScope API"""
         base_url = settings['base_url']
         if '/apps/' in base_url:
@@ -150,7 +150,7 @@ class AIReplyEngine:
         else:
             raise Exception(f"DashScope API响应格式错误: {result}")
 
-    def _call_gemini_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+    def _call_gemini_api(self, settings: dict, messages: list, max_tokens: int = 1024, temperature: float = 0.7) -> str:
         """
         调用Google Gemini REST API (v1beta)
         """
@@ -219,7 +219,7 @@ class AIReplyEngine:
             logger.error(f"Gemini API 响应格式错误: {result} - {e}")
             raise Exception(f"Gemini API 响应格式错误: {result}")
 
-    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 8319, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
         try:
             logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
@@ -394,11 +394,11 @@ class AIReplyEngine:
 
                 if self._is_dashscope_api(settings):
                     logger.info(f"使用DashScope API生成回复")
-                    reply = self._call_dashscope_api(settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_dashscope_api(settings, messages, max_tokens=1024, temperature=0.7)
                 
                 elif self._is_gemini_api(settings):
                     logger.info(f"使用Gemini API生成回复")
-                    reply = self._call_gemini_api(settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_gemini_api(settings, messages, max_tokens=1024, temperature=0.7)
                 
                 else:
                     logger.info(f"使用OpenAI兼容API生成回复")
@@ -407,7 +407,7 @@ class AIReplyEngine:
                     if not client:
                         return None
                     logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_openai_api(client, settings, messages, max_tokens=8319, temperature=0.7)
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)

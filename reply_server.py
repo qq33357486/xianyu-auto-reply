@@ -4557,10 +4557,15 @@ class BatchDeleteRequest(BaseModel):
 
 
 class AIReplySettings(BaseModel):
+    """AI回复设置（账号级别）
+    
+    注意：api_key、base_url、model_name 已统一使用系统配置，
+    这些字段保留是为了向后兼容，但不会被保存到数据库
+    """
     ai_enabled: bool
-    model_name: str = "qwen-plus"
-    api_key: str = ""
-    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model_name: Optional[str] = None  # 已废弃，使用系统配置
+    api_key: Optional[str] = None     # 已废弃，使用系统配置
+    base_url: Optional[str] = None    # 已废弃，使用系统配置
     max_discount_percent: int = 10
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
@@ -4649,6 +4654,32 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
         raise
     except Exception as e:
         logger.error(f"更新AI回复设置异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
+
+@app.put("/ai-reply-settings/{cookie_id}/toggle")
+def toggle_ai_reply(cookie_id: str, data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """单独切换AI回复开关，不影响其他设置"""
+    try:
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        enabled = data.get('enabled', False)
+        success = db_manager.toggle_ai_enabled(cookie_id, enabled)
+
+        if success:
+            logger.info(f"账号 {cookie_id} AI回复已{'启用' if enabled else '禁用'}")
+            return {"message": f"AI回复已{'启用' if enabled else '禁用'}"}
+        else:
+            raise HTTPException(status_code=400, detail="更新失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"切换AI回复开关异常: {e}")
         raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
 
 

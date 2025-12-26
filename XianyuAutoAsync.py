@@ -515,11 +515,47 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】清理实例缓存时出错: {self._safe_str(e)}")
     
     async def _cleanup_playwright_cache(self):
-        """清理Playwright浏览器临时文件和缓存（Docker环境专用）"""
+        """清理Playwright浏览器临时文件、缓存和残留进程（Docker环境专用）"""
         try:
             import shutil
             import glob
+            import subprocess
             
+            # ========== 1. 清理残留的 Playwright 进程 ==========
+            # 查找运行超过5分钟的 playwright/driver/node 进程并杀死
+            try:
+                # 使用 pgrep 查找 playwright 相关进程
+                result = subprocess.run(
+                    ['pgrep', '-f', 'playwright/driver/node'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    pids = result.stdout.strip().split('\n')
+                    for pid_str in pids:
+                        try:
+                            pid = int(pid_str.strip())
+                            # 获取进程运行时间
+                            etime_result = subprocess.run(
+                                ['ps', '-o', 'etimes=', '-p', str(pid)],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if etime_result.returncode == 0:
+                                etime = int(etime_result.stdout.strip())
+                                # 如果进程运行超过5分钟（300秒），杀死它
+                                if etime > 300:
+                                    os.kill(pid, 9)  # SIGKILL
+                                    logger.warning(f"【{self.cookie_id}】杀死残留Playwright进程 PID={pid} (已运行{etime}秒)")
+                        except (ValueError, ProcessLookupError, PermissionError) as e:
+                            pass  # 进程可能已经结束或无权限
+                        except Exception as e:
+                            logger.debug(f"【{self.cookie_id}】检查进程 {pid_str} 时出错: {e}")
+            except FileNotFoundError:
+                # pgrep 不存在（非Linux环境），跳过进程清理
+                pass
+            except Exception as e:
+                logger.debug(f"【{self.cookie_id}】清理Playwright进程时出错: {e}")
+            
+            # ========== 2. 清理临时文件和缓存 ==========
             # 定义需要清理的临时目录路径
             temp_paths = [
                 '/tmp/playwright-*',  # Playwright临时会话

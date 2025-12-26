@@ -148,9 +148,11 @@ export const checkPasswordLoginStatus = (sessionId: string): Promise<{
 // AI 回复设置接口 - 与后端 AIReplySettings 模型对应
 export interface AIReplySettings {
   ai_enabled: boolean
+  // 以下字段已废弃，统一使用系统配置，保留仅为向后兼容
   model_name?: string
   api_key?: string
   base_url?: string
+  // 账号级别的议价设置
   max_discount_percent?: number
   max_discount_amount?: number
   max_bargain_rounds?: number
@@ -164,20 +166,21 @@ export const getAIReplySettings = (cookieId: string): Promise<AIReplySettings> =
   return get(`/ai-reply-settings/${cookieId}`)
 }
 
-// 更新AI回复设置
+// 更新AI回复设置（只发送账号级别的设置，不发送 api_key/base_url/model_name）
 export const updateAIReplySettings = (cookieId: string, settings: Partial<AIReplySettings>): Promise<ApiResponse> => {
-  // 转换字段名以匹配后端
   const payload: Record<string, unknown> = {
     ai_enabled: settings.ai_enabled ?? settings.enabled ?? false,
-    model_name: settings.model_name ?? 'qwen-plus',
-    api_key: settings.api_key ?? '',
-    base_url: settings.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,
     custom_prompts: settings.custom_prompts ?? '',
   }
   return put(`/ai-reply-settings/${cookieId}`, payload)
+}
+
+// 单独切换AI回复开关（不影响其他设置）
+export const toggleAIReply = (cookieId: string, enabled: boolean): Promise<ApiResponse> => {
+  return put(`/ai-reply-settings/${cookieId}/toggle`, { enabled })
 }
 
 // 获取所有账号的AI回复设置
