@@ -844,10 +844,12 @@ class XianyuLive:
             
             logger.info(f"【{self.cookie_id}】🔄 开始补发货: order_id={order_id}, item_id={item_id}, buyer_id={buyer_id}, spec_value={spec_value}, quantity={quantity}")
             
-            # 获取商品信息
+            # 获取商品信息（可选，不强制要求存在）
             item_info = db_manager.get_item_info(self.cookie_id, item_id)
-            if not item_info:
-                return {'success': False, 'error': f'商品 {item_id} 不存在或不属于当前账号'}
+            if item_info:
+                logger.info(f"【{self.cookie_id}】找到商品信息: {item_info.get('item_title', item_id)}")
+            else:
+                logger.warning(f"【{self.cookie_id}】商品 {item_id} 在 item_info 表中不存在，将直接查找发货规则")
             
             # 获取发货规则
             delivery_rules = db_manager.get_delivery_rules(self.cookie_id, item_id)
