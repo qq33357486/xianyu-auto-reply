@@ -41,9 +41,13 @@ RUN python -m venv /opt/venv && \
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 
-# 复制requirements.txt并安装Python依赖
+# 复制requirements.txt并安装Python依赖（这一层会被缓存，除非requirements.txt变化）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 预安装 Playwright 浏览器（这一层会被缓存）
+RUN playwright install chromium && \
+    playwright install-deps chromium
 
 # 复制项目文件（排除 frontend 目录）
 COPY . .
@@ -125,11 +129,11 @@ RUN node --version && npm --version
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app /app
+COPY --from=builder /ms-playwright /ms-playwright
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 
-RUN playwright install chromium && \
-    playwright install-deps chromium
+# Playwright 浏览器已在 builder 阶段安装并复制过来，无需重新下载
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/logs /app/data /app/backups /app/static/uploads/images && \
