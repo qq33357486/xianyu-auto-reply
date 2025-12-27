@@ -423,6 +423,76 @@ class CookieManager:
         """获取账号的自动确认发货设置"""
         return self.auto_confirm_settings.get(cookie_id, True)  # 默认开启
 
+    async def restart_cookie_task_async(self, cookie_id: str, new_cookie_value: str, save_to_db: bool = False):
+        """异步重启指定Cookie的任务（供XianyuLive内部调用）
+        
+        此方法会在事件循环中作为独立任务运行，不会因为调用者被取消而终止。
+        
+        Args:
+            cookie_id: Cookie ID
+            new_cookie_value: 新的Cookie值
+            save_to_db: 是否保存到数据库（默认False，因为调用者通常已经保存过了）
+        """
+        try:
+            logger.info(f"【{cookie_id}】开始执行异步重启任务...")
+            
+            # 获取或创建该cookie_id的锁
+            if cookie_id not in self._task_locks:
+                self._task_locks[cookie_id] = asyncio.Lock()
+            
+            async with self._task_locks[cookie_id]:
+                # 获取原有的user_id和关键词
+                original_user_id = None
+                original_keywords = []
+                original_status = True
+
+                cookie_info = db_manager.get_cookie_details(cookie_id)
+                if cookie_info:
+                    original_user_id = cookie_info.get('user_id')
+
+                # 保存原有的关键词和状态
+                if cookie_id in self.keywords:
+                    original_keywords = self.keywords[cookie_id].copy()
+                if cookie_id in self.cookie_status:
+                    original_status = self.cookie_status[cookie_id]
+
+                # 先移除任务（但不删除数据库记录）
+                task = self.tasks.pop(cookie_id, None)
+                if task:
+                    logger.info(f"【{cookie_id}】正在停止旧任务...")
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"【{cookie_id}】等待旧任务停止超时（10秒），强制继续")
+                    except asyncio.CancelledError:
+                        logger.debug(f"【{cookie_id}】旧任务已取消")
+                    except Exception as e:
+                        logger.error(f"等待任务清理时出错: {cookie_id}, {e}")
+                    logger.info(f"【{cookie_id}】旧任务已停止")
+
+                # 更新Cookie值
+                self.cookies[cookie_id] = new_cookie_value
+                
+                # 只有在需要时才保存到数据库
+                if save_to_db:
+                    db_manager.save_cookie(cookie_id, new_cookie_value, original_user_id)
+
+                # 恢复关键词和状态
+                self.keywords[cookie_id] = original_keywords
+                self.cookie_status[cookie_id] = original_status
+
+                # 重新启动任务
+                new_task = self.loop.create_task(self._run_xianyu(cookie_id, new_cookie_value, original_user_id))
+                self.tasks[cookie_id] = new_task
+
+                logger.info(f"【{cookie_id}】异步重启完成，新任务已启动 (用户ID: {original_user_id}, 关键词: {len(original_keywords)}条)")
+                
+        except Exception as e:
+            logger.error(f"【{cookie_id}】异步重启任务失败: {e}")
+            import traceback
+            logger.error(f"【{cookie_id}】重启失败详情:\n{traceback.format_exc()}")
+
 
 # 在 Start.py 中会把此变量赋值为具体实例
 manager: Optional[CookieManager] = None 

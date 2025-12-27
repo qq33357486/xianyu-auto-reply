@@ -2433,33 +2433,30 @@ class XianyuLive:
                 # 通过CookieManager重启实例
                 logger.info(f"【{self.cookie_id}】通过CookieManager重启实例...")
                 
-                # ⚠️ 重要：不要等待重启完成！
-                # cookie_manager.update_cookie() 会立即取消当前任务
-                # 如果我们等待它完成，会导致 CancelledError 中断等待
-                # 正确的做法是：触发重启后立即返回，让任务自然退出
+                # 保存当前的 cookie_id 和 cookies_str 到局部变量
+                # 避免在延迟执行时 self 已被销毁导致访问失败
+                cookie_id = self.cookie_id
+                cookies_str = self.cookies_str
+                loop = cookie_manager.loop
                 
-                import threading
-                
-                def trigger_restart():
-                    """在后台线程中触发重启，不阻塞当前任务"""
+                async def delayed_restart():
+                    """延迟执行重启，确保当前任务有时间清理"""
                     try:
                         # 给当前任务一点时间完成清理（避免竞态条件）
-                        import time
-                        time.sleep(0.5)
-                        
-                        # save_to_db=False 因为 update_config_cookies 已经保存过了
-                        cookie_manager.update_cookie(self.cookie_id, self.cookies_str, save_to_db=False)
-                        logger.info(f"【{self.cookie_id}】实例重启请求已触发")
+                        await asyncio.sleep(0.5)
+                        logger.info(f"【{cookie_id}】开始执行延迟重启...")
+                        # 调用 CookieManager 的异步重启方法
+                        await cookie_manager.restart_cookie_task_async(cookie_id, cookies_str, save_to_db=False)
+                        logger.info(f"【{cookie_id}】实例重启请求已完成")
                     except Exception as e:
-                        logger.error(f"【{self.cookie_id}】触发实例重启失败: {e}")
+                        logger.error(f"【{cookie_id}】触发实例重启失败: {e}")
                         import traceback
-                        logger.error(f"【{self.cookie_id}】重启失败详情:\n{traceback.format_exc()}")
+                        logger.error(f"【{cookie_id}】重启失败详情:\n{traceback.format_exc()}")
 
-                # 在后台线程中触发重启
-                restart_thread = threading.Thread(target=trigger_restart, daemon=True)
-                restart_thread.start()
+                # 在事件循环中创建独立任务，不会因为当前任务取消而被终止
+                loop.create_task(delayed_restart())
                 
-                logger.info(f"【{self.cookie_id}】实例重启已触发，当前任务即将退出...")
+                logger.info(f"【{self.cookie_id}】实例重启已调度，当前任务即将退出...")
                 logger.warning(f"【{self.cookie_id}】注意：重启请求已发送，CookieManager将在0.5秒后取消当前任务并启动新实例")
                     
             else:
