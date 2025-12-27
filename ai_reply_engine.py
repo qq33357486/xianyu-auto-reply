@@ -292,8 +292,19 @@ class AIReplyEngine:
     
     def generate_reply(self, message: str, item_info: dict, chat_id: str,
                       cookie_id: str, user_id: str, item_id: str,
-                      skip_wait: bool = False) -> Optional[str]:
-        """生成AI回复"""
+                      skip_wait: bool = False, image_urls: list = None) -> Optional[str]:
+        """生成AI回复
+        
+        Args:
+            message: 用户消息文本
+            item_info: 商品信息
+            chat_id: 聊天ID
+            cookie_id: Cookie ID
+            user_id: 用户ID
+            item_id: 商品ID
+            skip_wait: 是否跳过内部等待
+            image_urls: 用户发送的图片URL列表（用于多模态AI）
+        """
         if not self.is_ai_enabled(cookie_id):
             return None
         
@@ -386,9 +397,23 @@ class AIReplyEngine:
 请根据以上信息生成回复："""
 
                 # 10. 调用AI生成回复
+                # 构建用户消息内容（支持多模态：文本+图片）
+                if image_urls and len(image_urls) > 0:
+                    # 多模态消息格式（OpenAI兼容格式）
+                    user_content = [{"type": "text", "text": user_prompt}]
+                    for img_url in image_urls:
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": img_url}
+                        })
+                    logger.info(f"【{cookie_id}】构建多模态消息，包含 {len(image_urls)} 张图片")
+                else:
+                    # 纯文本消息
+                    user_content = user_prompt
+                
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_content}
                 ]
 
                 reply = None # 初始化 reply 变量
@@ -431,14 +456,14 @@ class AIReplyEngine:
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
                                    cookie_id: str, user_id: str, item_id: str,
-                                   skip_wait: bool = False) -> Optional[str]:
+                                   skip_wait: bool = False, image_urls: list = None) -> Optional[str]:
         """
         异步包装器：在独立线程池中执行同步的 `generate_reply`，并返回结果。
         这样可以在异步代码中直接 await，而不阻塞事件循环。
         """
         try:
             import asyncio as _asyncio
-            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait)
+            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait, image_urls)
         except Exception as e:
             logger.error(f"异步生成回复失败: {e}")
             return None

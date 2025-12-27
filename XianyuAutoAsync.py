@@ -3386,7 +3386,7 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"更新卡券图片URL失败: {e}")
 
-    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str):
+    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str, image_urls: list = None):
         """获取AI回复"""
         try:
             from ai_reply_engine import ai_reply_engine
@@ -3425,7 +3425,8 @@ class XianyuLive:
                 cookie_id=self.cookie_id,
                 user_id=send_user_id,
                 item_id=item_id,
-                skip_wait=True  # 跳过内部等待，因为外部已实现防抖
+                skip_wait=True,  # 跳过内部等待，因为外部已实现防抖
+                image_urls=image_urls  # 传递图片URL列表
             )
 
             if reply:
@@ -6920,7 +6921,7 @@ class XianyuLive:
 
     async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket, 
                                        send_user_name: str, send_user_id: str, send_message: str,
-                                       item_id: str, msg_time: str):
+                                       item_id: str, msg_time: str, image_urls: list = None):
         """
         调度防抖回复：如果用户连续发送消息，等待用户停止发送后再回复最后一条消息
         
@@ -6933,6 +6934,7 @@ class XianyuLive:
             send_message: 消息内容
             item_id: 商品ID
             msg_time: 消息时间
+            image_urls: 用户发送的图片URL列表
         """
         # 提取消息ID并检查是否已处理
         message_id = self._extract_message_id(message_data)
@@ -7010,7 +7012,8 @@ class XianyuLive:
                     'send_user_id': send_user_id,
                     'send_message': send_message,
                     'item_id': item_id,
-                    'msg_time': msg_time
+                    'msg_time': msg_time,
+                    'image_urls': image_urls
                 },
                 'timer': current_timer
             }
@@ -7049,7 +7052,8 @@ class XianyuLive:
                         last_msg['send_message'],
                         last_msg['item_id'],
                         chat_id,
-                        last_msg['msg_time']
+                        last_msg['msg_time'],
+                        last_msg.get('image_urls')
                     )
                     
                 except asyncio.CancelledError:
@@ -7067,7 +7071,7 @@ class XianyuLive:
 
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
-                                         chat_id: str, msg_time: str):
+                                         chat_id: str, msg_time: str, image_urls: list = None):
         """
         处理聊天消息的回复逻辑（从handle_message中提取出来的核心回复逻辑）
         
@@ -7080,6 +7084,7 @@ class XianyuLive:
             item_id: 商品ID
             chat_id: 聊天ID
             msg_time: 消息时间
+            image_urls: 用户发送的图片URL列表
         """
         try:
             # 自动回复消息
@@ -7123,7 +7128,7 @@ class XianyuLive:
                     reply_source = '关键词'  # 标记为关键词回复
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
-                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
+                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id, image_urls)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
                     else:
@@ -7466,6 +7471,22 @@ class XianyuLive:
 
                 chat_id_raw = message_1.get("2", "")
                 chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
+                
+                # 提取图片URL列表（用于传递给AI）
+                image_urls = []
+                try:
+                    if "6" in message_1 and isinstance(message_1["6"], dict):
+                        msg_content = message_1["6"]
+                        if "3" in msg_content and isinstance(msg_content["3"], dict):
+                            content_data = msg_content["3"]
+                            # contentType 为 2 表示图片消息
+                            if content_data.get("contentType") == 2:
+                                pics = content_data.get("image", {}).get("pics", [])
+                                image_urls = [pic["url"] for pic in pics if pic.get("url")]
+                                if image_urls:
+                                    logger.info(f"【{self.cookie_id}】检测到用户发送的图片: {len(image_urls)} 张")
+                except Exception as img_e:
+                    logger.debug(f"提取图片URL失败: {self._safe_str(img_e)}")
 
             except Exception as e:
                 logger.error(f"提取聊天消息信息失败: {self._safe_str(e)}")
@@ -7676,7 +7697,8 @@ class XianyuLive:
                 send_user_id=send_user_id,
                 send_message=send_message,
                 item_id=item_id,
-                msg_time=msg_time
+                msg_time=msg_time,
+                image_urls=image_urls
             )
 
         except Exception as e:
