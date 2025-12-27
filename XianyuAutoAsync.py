@@ -849,10 +849,18 @@ class XianyuLive:
             if item_info:
                 logger.info(f"【{self.cookie_id}】找到商品信息: {item_info.get('item_title', item_id)}")
             else:
-                logger.warning(f"【{self.cookie_id}】商品 {item_id} 在 item_info 表中不存在，将直接查找发货规则")
+                logger.warning(f"【{self.cookie_id}】商品 {item_id} 在 item_info 表中不存在，将直接用商品ID查找发货规则")
             
-            # 获取发货规则（通过商品ID作为关键字匹配）
-            delivery_rules = db_manager.get_delivery_rules_by_keyword(item_id)
+            # 构建搜索文本：优先使用商品标题，否则使用商品ID
+            search_text = item_id
+            if item_info:
+                item_title = item_info.get('item_title', '')
+                if item_title:
+                    search_text = item_title
+                    logger.info(f"【{self.cookie_id}】使用商品标题匹配发货规则: {search_text}")
+            
+            # 获取发货规则（通过商品标题或ID作为关键字匹配）
+            delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
             if not delivery_rules:
                 return {'success': False, 'error': f'商品 {item_id} 没有配置发货规则'}
             
