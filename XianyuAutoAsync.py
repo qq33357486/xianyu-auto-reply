@@ -7263,7 +7263,34 @@ class XianyuLive:
 
             # 【消息接收标识】记录收到消息的时间，用于控制Cookie刷新
             self.last_message_received_time = time.time()
-            logger.warning(f"【{self.cookie_id}】收到消息，更新消息接收时间标识")
+            
+            # 【增强日志】记录解密后的消息结构，便于排查漏收消息问题
+            msg_keys = list(message.keys()) if isinstance(message, dict) else []
+            logger.info(f"【{self.cookie_id}】📨 收到消息，结构keys={msg_keys}")
+            
+            # 【增强日志】检查是否包含付款相关内容
+            try:
+                # 检查message['4']中的reminderContent（卡片UI更新消息）
+                if "4" in message and isinstance(message.get("4"), dict):
+                    reminder_in_4 = message["4"].get("reminderContent", "")
+                    if reminder_in_4:
+                        logger.info(f"【{self.cookie_id}】📋 message[4].reminderContent = {reminder_in_4}")
+                
+                # 检查message['1']['10']中的reminderContent（聊天消息）
+                if "1" in message and isinstance(message.get("1"), dict):
+                    msg_1 = message["1"]
+                    if "10" in msg_1 and isinstance(msg_1.get("10"), dict):
+                        reminder_in_1_10 = msg_1["10"].get("reminderContent", "")
+                        if reminder_in_1_10:
+                            logger.info(f"【{self.cookie_id}】💬 message[1][10].reminderContent = {reminder_in_1_10}")
+                
+                # 检查message['3']中的redReminder（红色提醒）
+                if "3" in message and isinstance(message.get("3"), dict):
+                    red_reminder = message["3"].get("redReminder", "")
+                    if red_reminder:
+                        logger.info(f"【{self.cookie_id}】🔴 message[3].redReminder = {red_reminder}")
+            except Exception as log_e:
+                logger.debug(f"【{self.cookie_id}】记录消息内容时出错: {self._safe_str(log_e)}")
 
             # 【优先处理】尝试获取订单ID并获取订单详情
             order_id = None
@@ -7415,11 +7442,21 @@ class XianyuLive:
                     reminder_content = msg_4.get("reminderContent", "")
                     button_content = msg_4.get("_CONTENT_MAP_UPDATE_PRE_dxCard.item.main.exContent.button", "")
                     
-                    # 检查是否为付款消息
+                    # 【修复】扩展付款消息检测关键字，包含所有可能的付款消息格式
+                    paid_keywords = [
+                        '[已付款，待发货]',
+                        '[我已付款，等待你发货]',
+                        '我已付款，等待你发货',
+                        '[记得及时发货]',
+                    ]
                     is_paid = (
-                        reminder_content == '[已付款，待发货]' or
+                        any(keyword in reminder_content for keyword in paid_keywords) or
                         '"text":"已付款"' in button_content
                     )
+                    
+                    # 【增强日志】记录卡片UI更新消息内容，便于排查
+                    if reminder_content or button_content:
+                        logger.info(f'【{self.cookie_id}】📦 卡片UI更新消息: reminderContent={reminder_content}, is_paid={is_paid}')
                     
                     if is_paid:
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -7433,7 +7470,7 @@ class XianyuLive:
                             chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
                         
                         if chat_id:
-                            logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到卡片UI更新消息[已付款，待发货]，触发自动发货检查')
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】🚀 检测到卡片UI更新付款消息[{reminder_content}]，触发自动发货检查')
                             try:
                                 send_user_name = "未知用户"
                                 send_user_id = user_id if user_id else "unknown"
@@ -7442,13 +7479,17 @@ class XianyuLive:
                                                                item_id, chat_id, msg_time)
                             except Exception as e:
                                 logger.error(f'[{msg_time}] 【{self.cookie_id}】处理卡片UI更新消息触发自动发货失败: {self._safe_str(e)}')
+                        else:
+                            logger.warning(f'[{msg_time}] 【{self.cookie_id}】⚠️ 检测到付款消息但无法提取chat_id，消息结构: keys={list(message.keys())}')
                         return
             except Exception as e:
                 logger.debug(f"检查卡片UI更新消息时出错: {self._safe_str(e)}")
 
             # 判断是否为聊天消息
             if not self.is_chat_message(message):
-                logger.warning("非聊天消息")
+                # 【增强日志】记录非聊天消息的结构，便于排查漏收消息
+                msg_keys = list(message.keys()) if isinstance(message, dict) else type(message).__name__
+                logger.warning(f"【{self.cookie_id}】非聊天消息，消息结构: {msg_keys}")
                 return
 
             # 处理聊天消息
@@ -7601,7 +7642,8 @@ class XianyuLive:
                 return
             # 【重要】检查是否为自动发货触发消息 - 即使在人工接入暂停期间也要处理
             elif self._is_auto_delivery_trigger(send_message):
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，即使在暂停期间也继续处理: {send_message}')
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】🚀 检测到自动发货触发消息(聊天消息形式)，即使在暂停期间也继续处理: {send_message}')
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】📋 发货触发详情: 用户={send_user_name}({send_user_id}), 商品={item_id}, chat_id={chat_id}')
                 # 使用统一的自动发货处理方法
                 await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
                                                item_id, chat_id, msg_time)
