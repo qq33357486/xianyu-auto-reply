@@ -4576,8 +4576,8 @@ class DBManager:
                         'status': row[7],
                         'cookie_id': row[8],
                         'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'created_at': self._utc_to_local(row[10]),
+                        'updated_at': self._utc_to_local(row[11])
                     }
                 return None
 
@@ -4600,6 +4600,20 @@ class DBManager:
                 logger.error(f"删除订单失败: {order_id} - {e}")
                 self.conn.rollback()
                 return False
+
+    def _utc_to_local(self, utc_time_str: str) -> str:
+        """将UTC时间字符串转换为东八区时间字符串"""
+        if not utc_time_str:
+            return utc_time_str
+        try:
+            from datetime import datetime, timedelta
+            # 解析UTC时间
+            utc_time = datetime.strptime(utc_time_str, '%Y-%m-%d %H:%M:%S')
+            # 转换为东八区时间（+8小时）
+            local_time = utc_time + timedelta(hours=8)
+            return local_time.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return utc_time_str
 
     def get_orders_by_cookie(self, cookie_id: str, limit: int = 100):
         """根据Cookie ID获取订单列表"""
@@ -4626,8 +4640,8 @@ class DBManager:
                         'amount': row[6],
                         'status': row[7],
                         'is_bargain': bool(row[8]) if row[8] is not None else False,
-                        'created_at': row[9],
-                        'updated_at': row[10]
+                        'created_at': self._utc_to_local(row[9]),
+                        'updated_at': self._utc_to_local(row[10])
                     })
 
                 return orders
@@ -4662,8 +4676,8 @@ class DBManager:
                         'status': row[7],
                         'cookie_id': row[8],
                         'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'created_at': self._utc_to_local(row[10]),
+                        'updated_at': self._utc_to_local(row[11])
                     })
 
                 return orders
