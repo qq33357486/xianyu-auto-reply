@@ -7388,8 +7388,18 @@ class XianyuLive:
                     return
                 elif red_reminder == '等待卖家发货':
                     user_url = f'https://www.goofish.com/personal?userId={user_id}'
-                    logger.info(f'[{msg_time}] 【系统】交易成功 {user_url} 等待卖家发货')
-                    # return
+                    logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到等待卖家发货状态，触发自动发货检查')
+                    try:
+                        send_user_name = message.get("3", {}).get("userName", "未知用户")
+                        send_user_id = user_id
+                        chat_id = message.get("3", {}).get("cid", "").split('@')[0] if message.get("3", {}).get("cid") else None
+                        if chat_id:
+                            # 调用现有的自动发货方法（内部有防重复机制）
+                            await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
+                                                           item_id, chat_id, msg_time)
+                    except Exception as e:
+                        logger.error(f'[{msg_time}] 【{self.cookie_id}】处理等待卖家发货触发自动发货失败: {self._safe_str(e)}')
+                    return
             except:
                 pass
 

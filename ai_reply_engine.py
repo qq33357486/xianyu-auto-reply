@@ -136,7 +136,7 @@ class AIReplyEngine:
         logger.info(f"发送的prompt: {prompt[:100]}...") # 避免 prompt 过长
         logger.debug(f"请求数据: {json.dumps(data, ensure_ascii=False)}")
 
-        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response = requests.post(url, headers=headers, json=data, timeout=120)
 
         if response.status_code != 200:
             logger.error(f"DashScope API请求失败: {response.status_code} - {response.text}")
@@ -203,7 +203,7 @@ class AIReplyEngine:
         logger.info(f"Calling Gemini REST API: {url.split('?')[0]}")
         logger.debug(f"Gemini Payload: {json.dumps(payload, ensure_ascii=False)}")
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
 
         if response.status_code != 200:
             logger.error(f"Gemini API 请求失败: {response.status_code} - {response.text}")
@@ -227,7 +227,8 @@ class AIReplyEngine:
                 model=settings['model_name'],
                 messages=messages,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                timeout=120
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
