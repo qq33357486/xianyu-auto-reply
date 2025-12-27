@@ -7403,6 +7403,44 @@ class XianyuLive:
             except:
                 pass
 
+            # 【新增】检查类型2：卡片UI更新消息（reminderContent在message['4']中）
+            try:
+                if isinstance(message, dict) and "4" in message and isinstance(message["4"], dict):
+                    msg_4 = message["4"]
+                    reminder_content = msg_4.get("reminderContent", "")
+                    button_content = msg_4.get("_CONTENT_MAP_UPDATE_PRE_dxCard.item.main.exContent.button", "")
+                    
+                    # 检查是否为付款消息
+                    is_paid = (
+                        reminder_content == '[已付款，待发货]' or
+                        '"text":"已付款"' in button_content
+                    )
+                    
+                    if is_paid:
+                        msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        # 从message['1']或message['2']提取chat_id
+                        chat_id = None
+                        if "2" in message:
+                            chat_id_raw = str(message["2"])
+                            chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                        elif "1" in message and isinstance(message["1"], str):
+                            chat_id_raw = message["1"]
+                            chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                        
+                        if chat_id:
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到卡片UI更新消息[已付款，待发货]，触发自动发货检查')
+                            try:
+                                send_user_name = "未知用户"
+                                send_user_id = user_id if user_id else "unknown"
+                                # 调用现有的自动发货方法（内部有防重复机制）
+                                await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
+                                                               item_id, chat_id, msg_time)
+                            except Exception as e:
+                                logger.error(f'[{msg_time}] 【{self.cookie_id}】处理卡片UI更新消息触发自动发货失败: {self._safe_str(e)}')
+                        return
+            except Exception as e:
+                logger.debug(f"检查卡片UI更新消息时出错: {self._safe_str(e)}")
+
             # 判断是否为聊天消息
             if not self.is_chat_message(message):
                 logger.warning("非聊天消息")
