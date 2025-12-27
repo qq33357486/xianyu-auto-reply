@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { ShoppingCart, RefreshCw, Search, Trash2, Eye, X, ChevronLeft, ChevronRight } from 'lucide-react'
-import { getOrders, deleteOrder, getOrderDetail, type OrderDetail } from '@/api/orders'
+import { ShoppingCart, RefreshCw, Search, Trash2, Eye, X, ChevronLeft, ChevronRight, Send } from 'lucide-react'
+import { getOrders, deleteOrder, getOrderDetail, retryDelivery, type OrderDetail } from '@/api/orders'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -90,6 +90,26 @@ export function Orders() {
       }
     } catch {
       addToast({ type: 'error', message: '删除失败' })
+    }
+  }
+
+  const [retryingOrderId, setRetryingOrderId] = useState<string | null>(null)
+
+  const handleRetryDelivery = async (orderId: string) => {
+    if (!confirm('确定要对此订单进行补发货吗？')) return
+    try {
+      setRetryingOrderId(orderId)
+      const result = await retryDelivery(orderId)
+      if (result.success) {
+        addToast({ type: 'success', message: `补发货成功${result.data?.rule_name ? `: ${result.data.rule_name}` : ''}` })
+        loadOrders()
+      } else {
+        addToast({ type: 'error', message: result.message || '补发货失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '补发货失败' })
+    } finally {
+      setRetryingOrderId(null)
     }
   }
 
@@ -263,6 +283,18 @@ export function Orders() {
                       </td>
                       <td>
                         <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleRetryDelivery(order.order_id)}
+                            disabled={retryingOrderId === order.order_id}
+                            className="p-2 rounded-lg hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors disabled:opacity-50"
+                            title="补发货"
+                          >
+                            {retryingOrderId === order.order_id ? (
+                              <RefreshCw className="w-4 h-4 text-green-500 animate-spin" />
+                            ) : (
+                              <Send className="w-4 h-4 text-green-500" />
+                            )}
+                          </button>
                           <button
                             onClick={() => handleShowDetail(order.order_id)}
                             className="p-2 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"

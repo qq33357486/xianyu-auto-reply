@@ -1,4 +1,4 @@
-import { get, del } from '@/utils/request'
+import { get, del, post } from '@/utils/request'
 import type { Order, ApiResponse } from '@/types'
 
 // 订单详情类型
@@ -55,6 +55,17 @@ export const deleteOrder = async (id: string): Promise<ApiResponse> => {
     return { success: true, message: '删除成功' }
   } catch {
     return { success: false, message: '删除失败' }
+  }
+}
+
+// 补发货
+export const retryDelivery = async (orderId: string): Promise<ApiResponse & { data?: { card_content?: string; rule_name?: string } }> => {
+  try {
+    const result = await post<{ success: boolean; message: string; data?: { card_content?: string; rule_name?: string } }>(`/api/orders/${orderId}/retry-delivery`, {})
+    return result
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } } }
+    return { success: false, message: err?.response?.data?.detail || '补发货失败' }
   }
 }
 

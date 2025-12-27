@@ -823,6 +823,142 @@ class XianyuLive:
     def get_instance_count(cls):
         """获取当前活跃实例数量"""
         return len(cls._instances)
+
+    async def retry_delivery(self, order_id: str, item_id: str, buyer_id: str, 
+                            spec_value: str = '', quantity: int = 1) -> dict:
+        """
+        补发货：根据订单信息直接触发发货流程
+        
+        Args:
+            order_id: 订单ID
+            item_id: 商品ID
+            buyer_id: 买家ID
+            spec_value: 规格值
+            quantity: 数量
+            
+        Returns:
+            dict: {'success': bool, 'message': str, 'card_content': str}
+        """
+        try:
+            from db_manager import db_manager
+            
+            logger.info(f"【{self.cookie_id}】🔄 开始补发货: order_id={order_id}, item_id={item_id}, buyer_id={buyer_id}, spec_value={spec_value}, quantity={quantity}")
+            
+            # 获取商品信息
+            item_info = db_manager.get_item_info(self.cookie_id, item_id)
+            if not item_info:
+                return {'success': False, 'error': f'商品 {item_id} 不存在或不属于当前账号'}
+            
+            # 获取发货规则
+            delivery_rules = db_manager.get_delivery_rules(self.cookie_id, item_id)
+            if not delivery_rules:
+                return {'success': False, 'error': f'商品 {item_id} 没有配置发货规则'}
+            
+            # 匹配发货规则
+            matched_rule = None
+            for rule in delivery_rules:
+                rule_keyword = rule.get('keyword', '')
+                # 如果规则关键字为空或者与规格值匹配
+                if not rule_keyword or rule_keyword in spec_value or spec_value in rule_keyword:
+                    matched_rule = rule
+                    break
+            
+            # 如果没有匹配到规则，使用第一个规则
+            if not matched_rule and delivery_rules:
+                matched_rule = delivery_rules[0]
+                logger.warning(f"【{self.cookie_id}】未匹配到规格 '{spec_value}' 的发货规则，使用默认规则: {matched_rule.get('card_name')}")
+            
+            if not matched_rule:
+                return {'success': False, 'error': '没有可用的发货规则'}
+            
+            logger.info(f"【{self.cookie_id}】匹配到发货规则: {matched_rule.get('card_name')} ({matched_rule.get('card_type')})")
+            
+            # 获取发货内容
+            delivery_content = None
+            card_type = matched_rule.get('card_type')
+            
+            if card_type == 'api':
+                delivery_content = await self._get_api_card_content(matched_rule, order_id, item_id, buyer_id, '', spec_value)
+            elif card_type == 'text':
+                delivery_content = matched_rule.get('text_content')
+            elif card_type == 'data':
+                delivery_content = db_manager.consume_batch_data(matched_rule.get('card_id'))
+            elif card_type == 'image':
+                image_url = matched_rule.get('image_url')
+                if image_url:
+                    delivery_content = f"__IMAGE_SEND__{matched_rule.get('card_id')}|{image_url}"
+            
+            if not delivery_content:
+                return {'success': False, 'error': '获取发货内容失败'}
+            
+            # 处理备注信息
+            final_content = self._process_delivery_content_with_description(
+                delivery_content, 
+                matched_rule.get('card_description', '')
+            )
+            
+            # 多数量发货处理
+            if quantity > 1:
+                contents = [final_content]
+                for i in range(1, quantity):
+                    if card_type == 'data':
+                        extra_content = db_manager.consume_batch_data(matched_rule.get('card_id'))
+                        if extra_content:
+                            contents.append(self._process_delivery_content_with_description(
+                                extra_content, 
+                                matched_rule.get('card_description', '')
+                            ))
+                    elif card_type == 'api':
+                        extra_content = await self._get_api_card_content(matched_rule, order_id, item_id, buyer_id, '', spec_value)
+                        if extra_content:
+                            contents.append(self._process_delivery_content_with_description(
+                                extra_content, 
+                                matched_rule.get('card_description', '')
+                            ))
+                final_content = '\n---\n'.join(contents)
+            
+            # 发送消息给买家
+            # 构造chat_id (格式: buyer_id@goofish)
+            chat_id = f"{buyer_id}"
+            
+            # 检查是否有活跃的WebSocket连接
+            if hasattr(self, 'ws') and self.ws:
+                # 检查是否为图片发送
+                if final_content.startswith('__IMAGE_SEND__'):
+                    parts = final_content.replace('__IMAGE_SEND__', '').split('|', 1)
+                    if len(parts) == 2:
+                        card_id, image_url = parts
+                        await self.send_image_msg(self.ws, chat_id, image_url)
+                        logger.info(f"【{self.cookie_id}】✅ 补发货图片发送成功: {order_id}")
+                else:
+                    await self.send_msg(self.ws, chat_id, final_content)
+                    logger.info(f"【{self.cookie_id}】✅ 补发货消息发送成功: {order_id}")
+                
+                # 增加发货次数统计
+                db_manager.increment_delivery_times(matched_rule.get('id'))
+                
+                # 自动确认发货
+                if self.is_auto_confirm_enabled():
+                    try:
+                        confirm_result = await self.auto_confirm_delivery(order_id, item_id, buyer_id)
+                        logger.info(f"【{self.cookie_id}】自动确认发货结果: {confirm_result}")
+                    except Exception as confirm_e:
+                        logger.warning(f"【{self.cookie_id}】自动确认发货失败: {self._safe_str(confirm_e)}")
+                
+                return {
+                    'success': True, 
+                    'message': '补发货成功',
+                    'card_content': final_content[:200] + '...' if len(final_content) > 200 else final_content,
+                    'rule_name': matched_rule.get('card_name')
+                }
+            else:
+                return {'success': False, 'error': 'WebSocket连接不可用，请确保账号已启动'}
+                
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】补发货失败: {self._safe_str(e)}")
+            import traceback
+            logger.error(f"【{self.cookie_id}】详细错误: {traceback.format_exc()}")
+            return {'success': False, 'error': f'补发货失败: {self._safe_str(e)}'}
     
     def _create_tracked_task(self, coro):
         """创建并追踪后台任务，确保异常不会被静默忽略"""

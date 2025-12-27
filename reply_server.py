@@ -6000,6 +6000,68 @@ def delete_order(order_id: str, current_user: Dict[str, Any] = Depends(get_curre
         raise HTTPException(status_code=500, detail=f"删除订单失败: {str(e)}")
 
 
+@app.post('/api/orders/{order_id}/retry-delivery')
+async def retry_order_delivery(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """补发货：根据订单信息直接触发发货流程"""
+    try:
+        from db_manager import db_manager
+        from XianyuAutoAsync import XianyuLive
+        
+        user_id = current_user['user_id']
+        log_with_user('info', f"补发货请求: {order_id}", current_user)
+        
+        # 获取订单信息
+        order = db_manager.get_order_by_id(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="订单不存在")
+        
+        # 验证订单属于当前用户
+        user_cookies = db_manager.get_all_cookies(user_id)
+        cookie_id = order.get('cookie_id')
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权操作此订单")
+        
+        # 获取订单相关信息
+        item_id = order.get('item_id')
+        buyer_id = order.get('buyer_id')
+        spec_value = order.get('spec_value', '')
+        quantity = order.get('quantity', '1')
+        
+        if not item_id:
+            raise HTTPException(status_code=400, detail="订单缺少商品ID，无法发货")
+        
+        # 获取XianyuLive实例
+        instance = XianyuLive.get_instance(cookie_id)
+        if not instance:
+            raise HTTPException(status_code=400, detail=f"账号 {cookie_id} 未运行，请先启动账号")
+        
+        # 调用补发货方法
+        log_with_user('info', f"开始补发货: order_id={order_id}, item_id={item_id}, buyer_id={buyer_id}, spec_value={spec_value}, quantity={quantity}", current_user)
+        
+        result = await instance.retry_delivery(
+            order_id=order_id,
+            item_id=item_id,
+            buyer_id=buyer_id,
+            spec_value=spec_value,
+            quantity=int(quantity) if quantity else 1
+        )
+        
+        if result.get('success'):
+            db_manager.insert_or_update_order(order_id, order_status='shipped')
+            log_with_user('info', f"补发货成功: {order_id}", current_user)
+            return {"success": True, "message": "补发货成功", "data": result}
+        else:
+            error_msg = result.get('error', '发货失败')
+            log_with_user('warning', f"补发货失败: {order_id}, 原因: {error_msg}", current_user)
+            return {"success": False, "message": error_msg, "data": result}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"补发货失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=f"补发货失败: {str(e)}")
+
+
 # ==================== 前端 SPA Catch-All 路由 ====================
 # 必须放在所有 API 路由之后，用于处理前端 SPA 的直接访问
 # 这样用户直接访问 /dashboard、/accounts 等前端路由时，会返回 index.html
