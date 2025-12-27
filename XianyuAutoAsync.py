@@ -851,8 +851,8 @@ class XianyuLive:
             else:
                 logger.warning(f"【{self.cookie_id}】商品 {item_id} 在 item_info 表中不存在，将直接查找发货规则")
             
-            # 获取发货规则
-            delivery_rules = db_manager.get_delivery_rules(self.cookie_id, item_id)
+            # 获取发货规则（通过商品ID作为关键字匹配）
+            delivery_rules = db_manager.get_delivery_rules_by_keyword(item_id)
             if not delivery_rules:
                 return {'success': False, 'error': f'商品 {item_id} 没有配置发货规则'}
             
