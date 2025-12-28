@@ -928,8 +928,9 @@ class XianyuLive:
                 final_content = '\n---\n'.join(contents)
             
             # 发送消息给买家
-            # 构造chat_id (格式: buyer_id@goofish)
-            chat_id = f"{buyer_id}"
+            # 优先从数据库订单中获取chat_id，如果没有则使用buyer_id
+            order_info = db_manager.get_order_by_id(order_id)
+            chat_id = order_info.get('chat_id') if order_info and order_info.get('chat_id') else buyer_id
             
             # 检查是否有活跃的WebSocket连接
             if hasattr(self, 'ws') and self.ws:
@@ -4826,6 +4827,7 @@ class XianyuLive:
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=send_user_id,
+                                chat_id=chat_id,
                                 cookie_id=self.cookie_id
                             )
                             
@@ -7853,6 +7855,7 @@ class XianyuLive:
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=send_user_id,
+                                chat_id=chat_id,
                                 cookie_id=self.cookie_id,
                                 is_bargain=True
                             )
