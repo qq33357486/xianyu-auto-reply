@@ -938,10 +938,10 @@ class XianyuLive:
                     parts = final_content.replace('__IMAGE_SEND__', '').split('|', 1)
                     if len(parts) == 2:
                         card_id, image_url = parts
-                        await self.send_image_msg(self.ws, chat_id, image_url)
+                        await self.send_image_msg(self.ws, chat_id, buyer_id, image_url)
                         logger.info(f"【{self.cookie_id}】✅ 补发货图片发送成功: {order_id}")
                 else:
-                    await self.send_msg(self.ws, chat_id, final_content)
+                    await self.send_msg(self.ws, chat_id, buyer_id, final_content)
                     logger.info(f"【{self.cookie_id}】✅ 补发货消息发送成功: {order_id}")
                 
                 # 增加发货次数统计
