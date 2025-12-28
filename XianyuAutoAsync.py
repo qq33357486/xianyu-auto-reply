@@ -950,7 +950,7 @@ class XianyuLive:
                 # 自动确认发货
                 if self.is_auto_confirm_enabled():
                     try:
-                        confirm_result = await self.auto_confirm_delivery(order_id, item_id, buyer_id)
+                        confirm_result = await self.auto_confirm(order_id, item_id)
                         logger.info(f"【{self.cookie_id}】自动确认发货结果: {confirm_result}")
                     except Exception as confirm_e:
                         logger.warning(f"【{self.cookie_id}】自动确认发货失败: {self._safe_str(confirm_e)}")
