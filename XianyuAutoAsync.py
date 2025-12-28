@@ -3162,14 +3162,21 @@ class XianyuLive:
     def extract_item_id_from_message(self, message):
         """从消息中提取商品ID的辅助方法"""
         try:
-            # 方法1: 从message["1"]中提取（如果是字符串格式）
-            message_1 = message.get('1')
-            if isinstance(message_1, str):
-                # 尝试从字符串中提取数字ID
-                id_match = re.search(r'(\d{10,})', message_1)
-                if id_match:
-                    logger.info(f"从message[1]字符串中提取商品ID: {id_match.group(1)}")
-                    return id_match.group(1)
+            # 方法1（最优先）: 从 reminderUrl 中提取 itemId 参数
+            # reminderUrl 格式: 'fleamarket://message_chat?itemId=1004345238770&...'
+            try:
+                message_1 = message.get('1', {})
+                if isinstance(message_1, dict) and '10' in message_1:
+                    message_10 = message_1.get('10', {})
+                    if isinstance(message_10, dict):
+                        reminder_url = message_10.get('reminderUrl', '')
+                        if isinstance(reminder_url, str) and 'itemId=' in reminder_url:
+                            item_id = reminder_url.split('itemId=')[1].split('&')[0]
+                            if item_id and item_id.isdigit() and len(item_id) >= 10:
+                                logger.info(f"从reminderUrl中提取商品ID: {item_id}")
+                                return item_id
+            except Exception as e:
+                logger.debug(f"从reminderUrl提取商品ID失败: {e}")
 
             # 方法2: 从message["3"]中提取
             message_3 = message.get('3', {})
@@ -3193,27 +3200,19 @@ class XianyuLive:
                             logger.info(f"从bizData中提取商品ID: {item_id}")
                             return item_id
 
-                # 从其他可能的字段中提取
+                # 从其他可能的字段中提取（只查找明确的itemId字段）
                 for key, value in message_3.items():
                     if isinstance(value, dict):
                         item_id = value.get('itemId') or value.get('item_id')
                         if item_id:
-                            logger.info(f"从{key}字段中提取商品ID: {item_id}")
+                            logger.info(f"从{key}字段中���取商品ID: {item_id}")
                             return item_id
 
-                # 从消息内容中提取数字ID
-                content = message_3.get('content', '')
-                if isinstance(content, str) and content:
-                    id_match = re.search(r'(\d{10,})', content)
-                    if id_match:
-                        logger.info(f"【{self.cookie_id}】从消息内容中提取商品ID: {id_match.group(1)}")
-                        return id_match.group(1)
-
-            # 方法3: 遍历整个消息结构查找可能的商品ID
+            # 方法3: 遍历整个消息结构查找明确的itemId字段（不再盲目匹配数字）
             def find_item_id_recursive(obj, path=""):
                 if isinstance(obj, dict):
-                    # 直接查找itemId字段
-                    for key in ['itemId', 'item_id', 'id']:
+                    # 只查找明确的itemId字段，不匹配其他数字字段
+                    for key in ['itemId', 'item_id']:
                         if key in obj and isinstance(obj[key], (str, int)):
                             value = str(obj[key])
                             if len(value) >= 10 and value.isdigit():
@@ -3222,16 +3221,12 @@ class XianyuLive:
 
                     # 递归查找
                     for key, value in obj.items():
+                        # 跳过可能包含消息序列号的字段
+                        if key in ['3'] and isinstance(value, str) and '.PNM' in str(value):
+                            continue
                         result = find_item_id_recursive(value, f"{path}.{key}" if path else key)
                         if result:
                             return result
-
-                elif isinstance(obj, str):
-                    # 从字符串中提取可能的商品ID
-                    id_match = re.search(r'(\d{10,})', obj)
-                    if id_match:
-                        logger.info(f"从{path}字符串中提取商品ID: {id_match.group(1)}")
-                        return id_match.group(1)
 
                 return None
 
