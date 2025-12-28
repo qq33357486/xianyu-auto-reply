@@ -7460,15 +7460,20 @@ class XianyuLive:
                         temp_user_id = None
                         temp_item_id = None
 
-                        # 提取用户ID
+                        # 提取用户ID（优先从reminderUrl的peerUserId参数提取）
                         try:
                             message_1 = message.get("1")
                             if isinstance(message_1, str) and '@' in message_1:
                                 temp_user_id = message_1.split('@')[0]
                             elif isinstance(message_1, dict):
-                                # 从字典中提取用户ID
+                                # 优先从reminderUrl中提取peerUserId
                                 if "10" in message_1 and isinstance(message_1["10"], dict):
-                                    temp_user_id = message_1["10"].get("senderUserId", "unknown_user")
+                                    reminder_url = message_1["10"].get("reminderUrl", "")
+                                    if isinstance(reminder_url, str) and "peerUserId=" in reminder_url:
+                                        temp_user_id = reminder_url.split("peerUserId=")[1].split("&")[0]
+                                    # 备选：从senderUserId获取
+                                    if not temp_user_id:
+                                        temp_user_id = message_1["10"].get("senderUserId", "unknown_user")
                                 else:
                                     temp_user_id = "unknown_user"
                             else:
@@ -7502,16 +7507,21 @@ class XianyuLive:
             except Exception as e:
                 logger.error(f"【{self.cookie_id}】提取订单ID失败: {self._safe_str(e)}")
 
-            # 安全地获取用户ID
+            # 安全地获取用户ID（优先从reminderUrl的peerUserId参数提取）
             user_id = None
             try:
                 message_1 = message.get("1")
                 if isinstance(message_1, str) and '@' in message_1:
                     user_id = message_1.split('@')[0]
                 elif isinstance(message_1, dict):
-                    # 如果message['1']是字典，从message["1"]["10"]["senderUserId"]中提取user_id
+                    # 优先从reminderUrl中提取peerUserId
                     if "10" in message_1 and isinstance(message_1["10"], dict):
-                        user_id = message_1["10"].get("senderUserId", "unknown_user")
+                        reminder_url = message_1["10"].get("reminderUrl", "")
+                        if isinstance(reminder_url, str) and "peerUserId=" in reminder_url:
+                            user_id = reminder_url.split("peerUserId=")[1].split("&")[0]
+                        # 备选：从senderUserId获取
+                        if not user_id:
+                            user_id = message_1["10"].get("senderUserId", "unknown_user")
                     else:
                         user_id = "unknown_user"
                 else:
