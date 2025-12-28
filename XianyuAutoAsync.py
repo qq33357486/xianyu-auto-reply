@@ -928,9 +928,16 @@ class XianyuLive:
                 final_content = '\n---\n'.join(contents)
             
             # 发送消息给买家
-            # 优先从数据库订单中获取chat_id，如果没有则使用buyer_id
+            # 从数据库订单中获取chat_id（会话ID）
+            # 注意：chat_id 和 buyer_id 是不同的！chat_id是会话ID，buyer_id是买家用户ID
             order_info = db_manager.get_order_by_id(order_id)
-            chat_id = order_info.get('chat_id') if order_info and order_info.get('chat_id') else buyer_id
+            chat_id = order_info.get('chat_id') if order_info else None
+            
+            if not chat_id:
+                logger.warning(f"【{self.cookie_id}】订单 {order_id} 缺少chat_id（会话ID），无法发送消息")
+                return {'success': False, 'error': '订单缺少会话ID(chat_id)，无法发送消息。该订单可能是旧版本创建的，请联系买家重新下单或手动发货。'}
+            
+            logger.info(f"【{self.cookie_id}】补发货参数: order_id={order_id}, chat_id={chat_id}, buyer_id={buyer_id}")
             
             # 检查是否有活跃的WebSocket连接
             if hasattr(self, 'ws') and self.ws:
@@ -3242,6 +3249,76 @@ class XianyuLive:
             logger.error(f"提取商品ID失败: {self._safe_str(e)}")
             return None
 
+    def extract_chat_id_from_message(self, message):
+        """从消息中提取会话ID(chat_id)的辅助方法
+        
+        chat_id 来源优先级：
+        1. reminderUrl 中的 sid 参数（最准确）
+        2. message["1"]["2"] 字段（去掉@goofish后缀）
+        3. message["3"]["cid"] 字段（去掉@goofish后缀）
+        """
+        try:
+            # 方法1（最优先）: 从 reminderUrl 中提取 sid 参数
+            # reminderUrl 格式: 'fleamarket://message_chat?itemId=xxx&peerUserId=xxx&sid=56904889058'
+            try:
+                message_1 = message.get('1', {})
+                if isinstance(message_1, dict) and '10' in message_1:
+                    message_10 = message_1.get('10', {})
+                    if isinstance(message_10, dict):
+                        reminder_url = message_10.get('reminderUrl', '')
+                        if isinstance(reminder_url, str) and 'sid=' in reminder_url:
+                            chat_id = reminder_url.split('sid=')[1].split('&')[0]
+                            if chat_id and chat_id.isdigit():
+                                logger.info(f"从reminderUrl的sid参数提取chat_id: {chat_id}")
+                                return chat_id
+            except Exception as e:
+                logger.debug(f"从reminderUrl提取chat_id失败: {e}")
+
+            # 方法2: 从 message["1"]["2"] 提取（去掉@goofish后缀）
+            try:
+                message_1 = message.get('1', {})
+                if isinstance(message_1, dict) and '2' in message_1:
+                    chat_id_raw = str(message_1.get('2', ''))
+                    if chat_id_raw:
+                        chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                        if chat_id and chat_id.isdigit():
+                            logger.info(f"从message[1][2]提取chat_id: {chat_id}")
+                            return chat_id
+            except Exception as e:
+                logger.debug(f"从message[1][2]提取chat_id失败: {e}")
+
+            # 方法3: 从 message["3"]["cid"] 提取
+            try:
+                message_3 = message.get('3', {})
+                if isinstance(message_3, dict) and 'cid' in message_3:
+                    chat_id_raw = str(message_3.get('cid', ''))
+                    if chat_id_raw:
+                        chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                        if chat_id and chat_id.isdigit():
+                            logger.info(f"从message[3][cid]提取chat_id: {chat_id}")
+                            return chat_id
+            except Exception as e:
+                logger.debug(f"从message[3][cid]提取chat_id失败: {e}")
+
+            # 方法4: 从 message["2"] 提取（顶层字段）
+            try:
+                if '2' in message:
+                    chat_id_raw = str(message.get('2', ''))
+                    if chat_id_raw:
+                        chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                        if chat_id and chat_id.isdigit():
+                            logger.info(f"从message[2]提取chat_id: {chat_id}")
+                            return chat_id
+            except Exception as e:
+                logger.debug(f"从message[2]提取chat_id失败: {e}")
+
+            logger.warning("所有方法都未能提取到chat_id")
+            return None
+
+        except Exception as e:
+            logger.error(f"提取chat_id失败: {self._safe_str(e)}")
+            return None
+
     def debug_message_structure(self, message, context=""):
         """调试消息结构的辅助方法"""
         try:
@@ -4494,7 +4571,7 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】免拼发货模块调用失败: {self._safe_str(e)}")
             return {"error": f"免拼发货模块调用失败: {self._safe_str(e)}", "order_id": order_id}
 
-    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None):
+    async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, chat_id: str = None, debug_headless: bool = None):
         """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）"""
         # 使用独立的订单详情锁，不与自动发货锁冲突
         order_detail_lock = self._order_detail_locks[order_id]
@@ -4554,6 +4631,7 @@ class XianyuLive:
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=buyer_id,
+                                chat_id=chat_id,
                                 spec_name=spec_name,
                                 spec_value=spec_value,
                                 quantity=quantity,
@@ -7495,8 +7573,11 @@ class XianyuLive:
                         except:
                             pass
 
+                        # 提取chat_id（会话ID，从reminderUrl的sid参数提取）
+                        temp_chat_id = self.extract_chat_id_from_message(message)
+
                         # 调用订单详情获取方法
-                        order_detail = await self.fetch_order_detail_info(order_id, temp_item_id, temp_user_id)
+                        order_detail = await self.fetch_order_detail_info(order_id, temp_item_id, temp_user_id, temp_chat_id)
                         if order_detail:
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单详情获取成功: {order_id}')
                         else:
