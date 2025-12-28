@@ -958,7 +958,9 @@ class XianyuLive:
                 # 自动确认发货
                 if self.is_auto_confirm_enabled():
                     try:
-                        confirm_result = await self.auto_confirm(order_id, item_id)
+                        # 使用 create_task 确保在正确的 Task 上下文中执行，避免 aiohttp 超时上下文错误
+                        confirm_task = asyncio.create_task(self.auto_confirm(order_id, item_id))
+                        confirm_result = await confirm_task
                         logger.info(f"【{self.cookie_id}】自动确认发货结果: {confirm_result}")
                     except Exception as confirm_e:
                         logger.warning(f"【{self.cookie_id}】自动确认发货失败: {self._safe_str(confirm_e)}")
