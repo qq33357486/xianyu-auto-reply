@@ -7579,7 +7579,21 @@ class XianyuLive:
                                 else:
                                     temp_user_id = "unknown_user"
                             else:
-                                temp_user_id = "unknown_user"
+                                # 当message['1']是字符串时，尝试从message['4']或message['2']中提取
+                                temp_user_id = None
+                                message_4 = message.get("4")
+                                if isinstance(message_4, dict):
+                                    reminder_url = message_4.get("reminderUrl", "")
+                                    if isinstance(reminder_url, str) and "peerUserId=" in reminder_url:
+                                        temp_user_id = reminder_url.split("peerUserId=")[1].split("&")[0]
+                                    if not temp_user_id:
+                                        temp_user_id = message_4.get("senderUserId")
+                                if not temp_user_id:
+                                    message_2 = message.get("2")
+                                    if isinstance(message_2, str) and '@' in message_2:
+                                        temp_user_id = message_2.split('@')[0]
+                                if not temp_user_id:
+                                    temp_user_id = "unknown_user"
                         except:
                             temp_user_id = "unknown_user"
 
@@ -7592,6 +7606,14 @@ class XianyuLive:
 
                             if not temp_item_id:
                                 temp_item_id = self.extract_item_id_from_message(message)
+                            
+                            # 新增：尝试从message['4']中提取itemId
+                            if not temp_item_id:
+                                message_4 = message.get("4")
+                                if isinstance(message_4, dict):
+                                    reminder_url = message_4.get("reminderUrl", "")
+                                    if isinstance(reminder_url, str) and "itemId=" in reminder_url:
+                                        temp_item_id = reminder_url.split("itemId=")[1].split("&")[0]
                         except:
                             pass
 
@@ -7630,7 +7652,21 @@ class XianyuLive:
                     else:
                         user_id = "unknown_user"
                 else:
-                    user_id = "unknown_user"
+                    # 当message['1']是字符串时，尝试从message['4']或message['2']中提取
+                    user_id = None
+                    message_4 = message.get("4")
+                    if isinstance(message_4, dict):
+                        reminder_url = message_4.get("reminderUrl", "")
+                        if isinstance(reminder_url, str) and "peerUserId=" in reminder_url:
+                            user_id = reminder_url.split("peerUserId=")[1].split("&")[0]
+                        if not user_id:
+                            user_id = message_4.get("senderUserId")
+                    if not user_id:
+                        message_2 = message.get("2")
+                        if isinstance(message_2, str) and '@' in message_2:
+                            user_id = message_2.split('@')[0]
+                    if not user_id:
+                        user_id = "unknown_user"
             except Exception as e:
                 logger.warning(f"提取用户ID失败: {self._safe_str(e)}")
                 user_id = "unknown_user"
@@ -7648,6 +7684,14 @@ class XianyuLive:
                 # 如果没有提取到，使用辅助方法
                 if not item_id:
                     item_id = self.extract_item_id_from_message(message)
+
+                # 新增：尝试从message['4']中提取itemId
+                if not item_id:
+                    message_4 = message.get("4")
+                    if isinstance(message_4, dict):
+                        reminder_url = message_4.get("reminderUrl", "")
+                        if isinstance(reminder_url, str) and "itemId=" in reminder_url:
+                            item_id = reminder_url.split("itemId=")[1].split("&")[0]
 
                 if not item_id:
                     item_id = f"auto_{user_id}_{int(time.time())}"
