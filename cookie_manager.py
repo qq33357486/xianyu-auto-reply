@@ -486,7 +486,17 @@ class CookieManager:
                 new_task = self.loop.create_task(self._run_xianyu(cookie_id, new_cookie_value, original_user_id))
                 self.tasks[cookie_id] = new_task
 
-                logger.info(f"【{cookie_id}】异步重启完成，新任务已启动 (用户ID: {original_user_id}, 关键词: {len(original_keywords)}条)")
+                # 短暂等待并验证任务是否正常启动
+                await asyncio.sleep(0.1)
+                if new_task.done():
+                    try:
+                        new_task.result()  # 检查是否有立即失败
+                        logger.warning(f"【{cookie_id}】新任务启动后立即完成（非预期行为）")
+                    except Exception as e:
+                        logger.error(f"【{cookie_id}】新任务启动后立即失败: {e}")
+                        raise RuntimeError(f"新任务启动失败: {e}")
+
+                logger.info(f"【{cookie_id}】异步重启完成，新任务已启动并验证正常 (用户ID: {original_user_id}, 关键词: {len(original_keywords)}条)")
                 
         except Exception as e:
             logger.error(f"【{cookie_id}】异步重启任务失败: {e}")

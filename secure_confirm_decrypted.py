@@ -131,42 +131,62 @@ class SecureConfirm:
 
         try:
             logger.info(f"【{self.cookie_id}】开始自动确认发货，订单ID: {order_id}")
-            async with self.session.post(
-                'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
-                params=params,
-                data=data
-            ) as response:
-                res_json = await response.json()
-
-                # 检查并更新Cookie
-                if 'set-cookie' in response.headers:
-                    new_cookies = {}
-                    for cookie in response.headers.getall('set-cookie', []):
-                        if '=' in cookie:
-                            name, value = cookie.split(';')[0].split('=', 1)
-                            new_cookies[name.strip()] = value.strip()
-
-                    # 更新cookies
-                    if new_cookies:
-                        self.cookies.update(new_cookies)
-                        # 生成新的cookie字符串
-                        self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
-                        # 更新数据库中的Cookie
-                        await self._update_config_cookies()
-                        logger.debug("已更新Cookie到数据库")
-
-                logger.info(f"【{self.cookie_id}】自动确认发货响应: {res_json}")
-
-                # 检查响应结果
-                if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':
-                    logger.info(f"【{self.cookie_id}】✅ 自动确认发货成功，订单ID: {order_id}")
-                    return {"success": True, "order_id": order_id}
-                else:
-                    error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
-                    logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
-
+            
+            # 【修复】使用 asyncio.wait_for 包装请求，避免 aiohttp 内部超时上下文错误
+            async def do_confirm_request():
+                async with self.session.post(
+                    'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
+                    params=params,
+                    data=data
+                ) as response:
+                    res_json = await response.json()
+                    # 返回响应头和JSON数据
+                    headers = dict(response.headers)
+                    return headers, res_json
+            
+            try:
+                headers, res_json = await asyncio.wait_for(do_confirm_request(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.error(f"【{self.cookie_id}】自动确认发货请求超时（30秒）")
+                if retry_count < 2:
+                    logger.info(f"【{self.cookie_id}】超时，准备重试...")
                     return await self.auto_confirm(order_id, item_id, retry_count + 1)
+                return {"error": "请求超时", "order_id": order_id}
 
+            # 检查并更新Cookie
+            if 'set-cookie' in headers or 'Set-Cookie' in headers:
+                new_cookies = {}
+                cookie_header = headers.get('set-cookie') or headers.get('Set-Cookie', '')
+                if isinstance(cookie_header, str):
+                    cookie_list = [cookie_header]
+                else:
+                    cookie_list = cookie_header if isinstance(cookie_header, list) else []
+                
+                for cookie in cookie_list:
+                    if '=' in cookie:
+                        name, value = cookie.split(';')[0].split('=', 1)
+                        new_cookies[name.strip()] = value.strip()
+
+                # 更新cookies
+                if new_cookies:
+                    self.cookies.update(new_cookies)
+                    # 生成新的cookie字符串
+                    self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
+                    # 更新数据库中的Cookie
+                    await self._update_config_cookies()
+                    logger.debug("已更新Cookie到数据库")
+
+            logger.info(f"【{self.cookie_id}】自动确认发货响应: {res_json}")
+
+            # 检查响应结果
+            if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':
+                logger.info(f"【{self.cookie_id}】✅ 自动确认发货成功，订单ID: {order_id}")
+                return {"success": True, "order_id": order_id}
+            else:
+                error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
+                logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
+
+                return await self.auto_confirm(order_id, item_id, retry_count + 1)
 
         except Exception as e:
             logger.error(f"【{self.cookie_id}】自动确认发货API请求异常: {self._safe_str(e)}")

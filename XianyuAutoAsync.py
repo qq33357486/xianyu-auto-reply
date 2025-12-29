@@ -360,6 +360,11 @@ class XianyuLive:
                         )
                         elapsed = time.time() - start_time
                         logger.info(f"【{self.cookie_id}】asyncio.wait() 返回，耗时 {elapsed:.3f}秒，已完成: {len(done)}，未完成: {len(pending)}")
+                    except asyncio.CancelledError:
+                        elapsed = time.time() - start_time
+                        logger.warning(f"【{self.cookie_id}】任务取消流程被中断（当前任务被取消，耗时 {elapsed:.3f}秒），强制重置任务引用")
+                        # 不重新抛出，让 finally 块执行清理
+                        return
                         
                         # 检查已完成的任务，并记录详细信息
                         for task_name, task in tasks_to_cancel:
@@ -2596,18 +2601,35 @@ class XianyuLive:
                 loop = cookie_manager.loop
                 
                 async def delayed_restart():
-                    """延迟执行重启，确保当前任务有时间清理"""
-                    try:
-                        # 给当前任务一点时间完成清理（避免竞态条件）
-                        await asyncio.sleep(0.5)
-                        logger.info(f"【{cookie_id}】开始执行延迟重启...")
-                        # 调用 CookieManager 的异步重启方法
-                        await cookie_manager.restart_cookie_task_async(cookie_id, cookies_str, save_to_db=False)
-                        logger.info(f"【{cookie_id}】实例重启请求已完成")
-                    except Exception as e:
-                        logger.error(f"【{cookie_id}】触发实例重启失败: {e}")
-                        import traceback
-                        logger.error(f"【{cookie_id}】重启失败详情:\n{traceback.format_exc()}")
+                    """延迟执行重启，确保当前任务有时间清理，带重试机制"""
+                    max_retries = 3
+                    retry_delay = 2.0
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            # 首次等待0.5秒，重试时等待更长
+                            wait_time = 0.5 if attempt == 0 else retry_delay
+                            await asyncio.sleep(wait_time)
+                            logger.info(f"【{cookie_id}】开始执行延迟重启（尝试 {attempt + 1}/{max_retries}）...")
+                            
+                            # 检查任务是否已经在运行（避免重复启动）
+                            if cookie_id in cookie_manager.tasks and not cookie_manager.tasks[cookie_id].done():
+                                logger.info(f"【{cookie_id}】任务已在运行，跳过重启")
+                                return
+                            
+                            # 调用 CookieManager 的异步重启方法
+                            await cookie_manager.restart_cookie_task_async(cookie_id, cookies_str, save_to_db=False)
+                            logger.info(f"【{cookie_id}】实例重启请求已完成")
+                            return  # 成功则退出
+                            
+                        except Exception as e:
+                            logger.error(f"【{cookie_id}】触发实例重启失败（尝试 {attempt + 1}/{max_retries}）: {e}")
+                            import traceback
+                            logger.error(f"【{cookie_id}】重启失败详情:\n{traceback.format_exc()}")
+                            if attempt < max_retries - 1:
+                                logger.info(f"【{cookie_id}】将在 {retry_delay} 秒后重试...")
+                            else:
+                                logger.error(f"【{cookie_id}】重启失败已达最大重试次数（{max_retries}次），请手动检查")
 
                 # 在事件循环中创建独立任务，不会因为当前任务取消而被终止
                 loop.create_task(delayed_restart())
@@ -7696,6 +7718,20 @@ class XianyuLive:
                     
                     if is_paid:
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        
+                        # 【修复】从message['4']的reminderUrl中提取真实的itemId
+                        real_item_id = None
+                        try:
+                            reminder_url = msg_4.get("reminderUrl", "")
+                            if isinstance(reminder_url, str) and "itemId=" in reminder_url:
+                                real_item_id = reminder_url.split("itemId=")[1].split("&")[0]
+                                logger.info(f"【{self.cookie_id}】从卡片UI更新消息提取到商品ID: {real_item_id}")
+                        except Exception as e:
+                            logger.warning(f"【{self.cookie_id}】从卡片UI更新消息提取商品ID失败: {self._safe_str(e)}")
+                        
+                        # 使用提取到的真实商品ID，如果提取失败则使用之前的item_id
+                        final_item_id = real_item_id if real_item_id else item_id
+                        
                         # 从message['1']或message['2']提取chat_id
                         chat_id = None
                         if "2" in message:
@@ -7706,13 +7742,13 @@ class XianyuLive:
                             chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
                         
                         if chat_id:
-                            logger.info(f'[{msg_time}] 【{self.cookie_id}】🚀 检测到卡片UI更新付款消息[{reminder_content}]，触发自动发货检查')
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】🚀 检测到卡片UI更新付款消息[{reminder_content}]，触发自动发货检查，商品ID: {final_item_id}')
                             try:
                                 send_user_name = "未知用户"
                                 send_user_id = user_id if user_id else "unknown"
-                                # 调用现有的自动发货方法（内部有防重复机制）
+                                # 调用现有的自动发货方法（内部有防重复机制），使用提取到的真实商品ID
                                 await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
-                                                               item_id, chat_id, msg_time)
+                                                               final_item_id, chat_id, msg_time)
                             except Exception as e:
                                 logger.error(f'[{msg_time}] 【{self.cookie_id}】处理卡片UI更新消息触发自动发货失败: {self._safe_str(e)}')
                         else:
@@ -8166,20 +8202,8 @@ class XianyuLive:
                         logger.error(f"【{self.cookie_id}】准备重启实例...")
                         self.connection_failures = 0  # 重置失败计数
                         
-                        # 先清理后台任务，避免与重启过程冲突
-                        logger.info(f"【{self.cookie_id}】重启前先清理后台任务...")
-                        try:
-                            await asyncio.wait_for(
-                                self._cancel_background_tasks(),
-                                timeout=8.0  # 给足够时间让任务响应
-                            )
-                            logger.info(f"【{self.cookie_id}】后台任务已清理完成")
-                        except asyncio.TimeoutError:
-                            logger.warning(f"【{self.cookie_id}】后台任务清理超时，强制继续重启")
-                        except Exception as cleanup_e:
-                            logger.error(f"【{self.cookie_id}】后台任务清理失败: {self._safe_str(cleanup_e)}")
-                        
-                        # 触发重启（不等待完成）
+                        # 直接触发重启，让 restart_cookie_task_async 统一处理任务清理
+                        # 避免重复调用 _cancel_background_tasks 导致的竞态条件
                         await self._restart_instance()
                         
                         # ⚠️ 重要：_restart_instance() 已触发重启，0.5秒后当前任务会被取消
