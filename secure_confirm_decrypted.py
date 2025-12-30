@@ -129,6 +129,17 @@ class SecureConfirm:
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
 
+        # 构建请求头，必须包含Cookie
+        headers = {
+            'accept': 'application/json',
+            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://www.goofish.com',
+            'referer': 'https://www.goofish.com/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'cookie': self.cookies_str
+        }
+
         try:
             logger.info(f"【{self.cookie_id}】开始自动确认发货，订单ID: {order_id}")
             
@@ -137,7 +148,8 @@ class SecureConfirm:
                 async with self.session.post(
                     'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
                     params=params,
-                    data=data
+                    data=data,
+                    headers=headers
                 ) as response:
                     res_json = await response.json()
                     # 返回响应头和JSON数据
