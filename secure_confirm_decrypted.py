@@ -152,12 +152,12 @@ class SecureConfirm:
                     headers=headers
                 ) as response:
                     res_json = await response.json()
-                    # 返回响应头和JSON数据
-                    headers = dict(response.headers)
-                    return headers, res_json
+                    # 返回响应头和JSON数据（使用不同变量名避免作用域冲突）
+                    response_headers = dict(response.headers)
+                    return response_headers, res_json
             
             try:
-                headers, res_json = await asyncio.wait_for(do_confirm_request(), timeout=30.0)
+                response_headers, res_json = await asyncio.wait_for(do_confirm_request(), timeout=30.0)
             except asyncio.TimeoutError:
                 logger.error(f"【{self.cookie_id}】自动确认发货请求超时（30秒）")
                 if retry_count < 2:
@@ -166,9 +166,9 @@ class SecureConfirm:
                 return {"error": "请求超时", "order_id": order_id}
 
             # 检查并更新Cookie
-            if 'set-cookie' in headers or 'Set-Cookie' in headers:
+            if 'set-cookie' in response_headers or 'Set-Cookie' in response_headers:
                 new_cookies = {}
-                cookie_header = headers.get('set-cookie') or headers.get('Set-Cookie', '')
+                cookie_header = response_headers.get('set-cookie') or response_headers.get('Set-Cookie', '')
                 if isinstance(cookie_header, str):
                     cookie_list = [cookie_header]
                 else:
