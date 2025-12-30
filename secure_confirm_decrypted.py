@@ -186,14 +186,41 @@ class SecureConfirm:
                 error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
                 logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
 
-                # 检测Token过期错误，尝试从主实例同步最新cookies后再重试
+                # 检测Token过期错误，触发强制刷新后再重试
                 if ('TOKEN_EXOIRED' in error_msg or 'TOKEN_EXPIRED' in error_msg or 'ILLEGAL_ACCESS' in error_msg):
                     if retry_count < 2 and self.main_instance:
-                        logger.info(f"【{self.cookie_id}】检测到Token过期，尝试从主实例获取最新cookies...")
-                        # 从主实例同步最新的cookies
-                        self.cookies_str = self.main_instance.cookies_str
-                        self.cookies = trans_cookies(self.cookies_str)
-                        logger.info(f"【{self.cookie_id}】已同步最新cookies，准备重试...")
+                        logger.info(f"【{self.cookie_id}】检测到Token过期，触发强制刷新...")
+                        
+                        # 调用主实例的强制刷新方法（绕过冷却机制）
+                        try:
+                            refresh_success = await self.main_instance.force_refresh_token()
+                            
+                            if refresh_success:
+                                # 刷新成功，同步最新cookies后重试
+                                self.cookies_str = self.main_instance.cookies_str
+                                self.cookies = trans_cookies(self.cookies_str)
+                                logger.info(f"【{self.cookie_id}】Token刷新成功，准备重试确认发货...")
+                                await asyncio.sleep(1)  # 等待1秒让新Token生效
+                                return await self.auto_confirm(order_id, item_id, retry_count + 1)
+                            else:
+                                logger.warning(f"【{self.cookie_id}】Token刷新失败，将订单加入待确认队列...")
+                                # 将订单加入待确认队列，等下次Token刷新成功后自动重试
+                                await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                                return {"error": "Token刷新失败，已加入待确认队列", "order_id": order_id, "queued": True}
+                        except Exception as refresh_e:
+                            logger.error(f"【{self.cookie_id}】强制刷新Token异常: {self._safe_str(refresh_e)}")
+                            # 刷新异常时也加入队列
+                            try:
+                                await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                            except:
+                                pass
+                            return {"error": f"Token刷新异常: {self._safe_str(refresh_e)}", "order_id": order_id}
+                    else:
+                        # 没有主实例或重试次数已达上限，尝试从主实例同步cookies后重试
+                        if self.main_instance:
+                            self.cookies_str = self.main_instance.cookies_str
+                            self.cookies = trans_cookies(self.cookies_str)
+                            logger.info(f"【{self.cookie_id}】已同步最新cookies，准备重试...")
 
                 return await self.auto_confirm(order_id, item_id, retry_count + 1)
 

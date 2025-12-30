@@ -748,6 +748,9 @@ class XianyuLive:
         self.browser_cookie_refreshed = False  # 标记_refresh_cookies_via_browser是否成功更新过数据库
         self.restarted_in_browser_refresh = False  # 刷新流程内部是否已触发重启（用于去重）
 
+        # 待确认发货队列（Token过期时暂存订单，刷新成功后重试）
+        self.pending_confirm_orders = []  # [(order_id, item_id, add_time), ...]
+        self.pending_confirm_lock = asyncio.Lock()
 
         # 滑块验证相关
         self.captcha_verification_count = 0  # 滑块验证次数计数器
@@ -1478,11 +1481,12 @@ class XianyuLive:
 
 
 
-    async def refresh_token(self, captcha_retry_count: int = 0):
+    async def refresh_token(self, captcha_retry_count: int = 0, force: bool = False):
         """刷新token
 
         Args:
             captcha_retry_count: 滑块验证重试次数，用于防止无限递归
+            force: 是否强制刷新（绕过冷却机制），用于API返回Token过期等紧急情况
         """
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
@@ -1505,16 +1509,20 @@ class XianyuLive:
                 return None
 
             # 【消息接收检查】检查是否在消息接收后的冷却时间内，与 cookie_refresh_loop 保持一致
-            current_time = time.time()
-            time_since_last_message = current_time - self.last_message_received_time
-            if self.last_message_received_time > 0 and time_since_last_message < self.message_cookie_refresh_cooldown:
-                remaining_time = self.message_cookie_refresh_cooldown - time_since_last_message
-                remaining_minutes = int(remaining_time // 60)
-                remaining_seconds = int(remaining_time % 60)
-                logger.info(f"【{self.cookie_id}】收到消息后冷却中，放弃本次token刷新，还需等待 {remaining_minutes}分{remaining_seconds}秒")
-                # 标记为因冷却而跳过（正常情况）
-                self.last_token_refresh_status = "skipped_cooldown"
-                return None
+            # 如果是强制刷新模式，则跳过冷却检查
+            if force:
+                logger.warning(f"【{self.cookie_id}】强制刷新模式，跳过冷却检查")
+            else:
+                current_time = time.time()
+                time_since_last_message = current_time - self.last_message_received_time
+                if self.last_message_received_time > 0 and time_since_last_message < self.message_cookie_refresh_cooldown:
+                    remaining_time = self.message_cookie_refresh_cooldown - time_since_last_message
+                    remaining_minutes = int(remaining_time // 60)
+                    remaining_seconds = int(remaining_time % 60)
+                    logger.info(f"【{self.cookie_id}】收到消息后冷却中，放弃本次token刷新，还需等待 {remaining_minutes}分{remaining_seconds}秒")
+                    # 标记为因冷却而跳过（正常情况）
+                    self.last_token_refresh_status = "skipped_cooldown"
+                    return None
 
             # 【重要】在刷新token前，先从数据库重新加载最新的cookie
             # 这样即使用户已经手动更新了cookie，代码也会使用最新的cookie
@@ -1689,6 +1697,10 @@ class XianyuLive:
                                 logger.info(f"【{self.cookie_id}】Token刷新成功")
                                 # 标记为成功
                                 self.last_token_refresh_status = "success"
+                                
+                                # 处理待确认发货队列（Token刷新成功后自动重试之前失败的订单）
+                                asyncio.create_task(self.process_pending_confirm_orders())
+                                
                                 return new_token
 
                     # 检查是否需要滑块验证
@@ -2215,6 +2227,79 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】更新cookies并重启任务时出错: {self._safe_str(e)}")
             return False
+
+    async def force_refresh_token(self) -> bool:
+        """强制刷新Token（绕过冷却机制）
+        
+        用于API返回Token过期等紧急情况，会绕过消息接收后的冷却检查
+        
+        Returns:
+            bool: 刷新是否成功
+        """
+        logger.warning(f"【{self.cookie_id}】触发强制Token刷新（绕过冷却机制）...")
+        new_token = await self.refresh_token(force=True)
+        return new_token is not None
+
+    async def add_pending_confirm_order(self, order_id: str, item_id: str = None):
+        """将订单加入待确认发货队列
+        
+        当Token过期导致确认发货失败时，将订单暂存到队列中，
+        等Token刷新成功后自动重试
+        
+        Args:
+            order_id: 订单ID
+            item_id: 商品ID（可选）
+        """
+        async with self.pending_confirm_lock:
+            # 检查是否已在队列中
+            for existing in self.pending_confirm_orders:
+                if existing[0] == order_id:
+                    logger.info(f"【{self.cookie_id}】订单 {order_id} 已在待确认队列中，跳过重复添加")
+                    return
+            self.pending_confirm_orders.append((order_id, item_id, time.time()))
+            logger.warning(f"【{self.cookie_id}】订单 {order_id} 已加入待确认发货队列，当前队列长度: {len(self.pending_confirm_orders)}")
+
+    async def process_pending_confirm_orders(self):
+        """处理待确认发货队列
+        
+        在Token刷新成功后调用，自动重试之前因Token过期而失败的订单
+        """
+        async with self.pending_confirm_lock:
+            if not self.pending_confirm_orders:
+                return
+            
+            queue_length = len(self.pending_confirm_orders)
+            logger.info(f"【{self.cookie_id}】开始处理待确认发货队列，共 {queue_length} 个订单")
+            
+            orders_to_process = self.pending_confirm_orders.copy()
+            self.pending_confirm_orders.clear()
+        
+        success_count = 0
+        skip_count = 0
+        fail_count = 0
+        
+        for order_id, item_id, add_time in orders_to_process:
+            # 超过30分钟的订单跳过
+            if time.time() - add_time > 1800:
+                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过30分钟，跳过处理")
+                skip_count += 1
+                continue
+            
+            try:
+                logger.info(f"【{self.cookie_id}】重试确认发货: 订单ID={order_id}")
+                result = await self._handle_auto_confirm(order_id, item_id)
+                if result and result.get('success'):
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logger.error(f"【{self.cookie_id}】处理待确认订单 {order_id} 失败: {self._safe_str(e)}")
+                fail_count += 1
+            
+            # 每个订单处理后等待0.5秒，避免请求过快
+            await asyncio.sleep(0.5)
+        
+        logger.info(f"【{self.cookie_id}】待确认发货队列处理完成: 成功={success_count}, 跳过={skip_count}, 失败={fail_count}")
 
     async def update_config_cookies(self):
         """更新数据库中的cookies（不会覆盖账号密码等其他字段）"""
