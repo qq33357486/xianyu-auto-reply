@@ -186,6 +186,15 @@ class SecureConfirm:
                 error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
                 logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
 
+                # 检测Token过期错误，尝试从主实例同步最新cookies后再重试
+                if ('TOKEN_EXOIRED' in error_msg or 'TOKEN_EXPIRED' in error_msg or 'ILLEGAL_ACCESS' in error_msg):
+                    if retry_count < 2 and self.main_instance:
+                        logger.info(f"【{self.cookie_id}】检测到Token过期，尝试从主实例获取最新cookies...")
+                        # 从主实例同步最新的cookies
+                        self.cookies_str = self.main_instance.cookies_str
+                        self.cookies = trans_cookies(self.cookies_str)
+                        logger.info(f"【{self.cookie_id}】已同步最新cookies，准备重试...")
+
                 return await self.auto_confirm(order_id, item_id, retry_count + 1)
 
         except Exception as e:
