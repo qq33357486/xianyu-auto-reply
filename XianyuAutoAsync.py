@@ -1007,15 +1007,23 @@ class XianyuLive:
     def can_auto_delivery(self, order_id: str) -> bool:
         """检查是否可以进行自动发货（防重复发货）- 基于订单ID"""
         if not order_id:
-            # 如果没有订单ID，则不进行冷却检查，允许发货
             return True
 
-        current_time = time.time()
-        last_delivery = self.last_delivery_time.get(order_id, 0)
-
-        if current_time - last_delivery < self.delivery_cooldown:
-            logger.info(f"【{self.cookie_id}】订单 {order_id} 在冷却期内，跳过自动发货")
+        # 第一重检查：内存中的已发货订单集合
+        if order_id in self.delivery_sent_orders:
+            logger.info(f"【{self.cookie_id}】订单 {order_id} 已在已发货集合中，跳过自动发货")
             return False
+
+        # 第二重检查：数据库中的订单状态（持久化，防止重启后重复发货）
+        try:
+            from db_manager import db_manager
+            order_info = db_manager.get_order_by_id(order_id)
+            if order_info and order_info.get('order_status') == 'shipped':
+                logger.info(f"【{self.cookie_id}】订单 {order_id} 数据库状态为已发货，跳过自动发货")
+                self.delivery_sent_orders.add(order_id)  # 同步到内存
+                return False
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】检查订单数据库状态失败: {self._safe_str(e)}")
 
         return True
 
