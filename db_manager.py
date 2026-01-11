@@ -4665,6 +4665,77 @@ class DBManager:
                 logger.error(f"获取Cookie订单列表失败: {cookie_id} - {e}")
                 return []
 
+    def get_orders_paginated(self, cookie_ids: list = None, status: str = None, page: int = 1, page_size: int = 20):
+        """分页获取订单列表，支持按账号和状态筛选"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                
+                # 构建查询条件
+                conditions = []
+                params = []
+                
+                if cookie_ids:
+                    placeholders = ','.join(['?' for _ in cookie_ids])
+                    conditions.append(f'cookie_id IN ({placeholders})')
+                    params.extend(cookie_ids)
+                
+                if status:
+                    conditions.append('order_status = ?')
+                    params.append(status)
+                
+                where_clause = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+                
+                # 获取总数
+                count_sql = f'SELECT COUNT(*) FROM orders{where_clause}'
+                cursor.execute(count_sql, params)
+                total = cursor.fetchone()[0]
+                
+                # 计算分页
+                offset = (page - 1) * page_size
+                total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+                
+                # 获取分页数据
+                query_sql = f'''
+                SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                FROM orders{where_clause}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                '''
+                cursor.execute(query_sql, params + [page_size, offset])
+                
+                orders = []
+                for row in cursor.fetchall():
+                    orders.append({
+                        'id': row[0],
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'chat_id': row[3],
+                        'spec_name': row[4],
+                        'spec_value': row[5],
+                        'quantity': row[6],
+                        'amount': row[7],
+                        'status': row[8],
+                        'cookie_id': row[9],
+                        'is_bargain': bool(row[10]) if row[10] is not None else False,
+                        'created_at': self._utc_to_local(row[11]),
+                        'updated_at': self._utc_to_local(row[12])
+                    })
+                
+                return {
+                    'orders': orders,
+                    'total': total,
+                    'page': page,
+                    'page_size': page_size,
+                    'total_pages': total_pages
+                }
+                
+            except Exception as e:
+                logger.error(f"分页获取订单列表失败: {e}")
+                return {'orders': [], 'total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
+
     def get_all_orders(self, limit: int = 1000):
         """获取所有订单列表"""
         with self.lock:

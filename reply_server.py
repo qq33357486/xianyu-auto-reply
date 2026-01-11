@@ -5905,31 +5905,46 @@ def update_item_multi_quantity_delivery(cookie_id: str, item_id: str, delivery_d
 # ==================== 订单管理接口 ====================
 
 @app.get('/api/orders')
-def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """获取当前用户的订单信息"""
+def get_user_orders(
+    cookie_id: str = None,
+    status: str = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取当前用户的订单信息（支持分页和筛选）"""
     try:
         from db_manager import db_manager
 
         user_id = current_user['user_id']
-        log_with_user('info', "查询用户订单信息", current_user)
+        log_with_user('info', f"查询用户订单信息: cookie_id={cookie_id}, status={status}, page={page}, page_size={page_size}", current_user)
 
         # 获取用户的所有Cookie
         user_cookies = db_manager.get_all_cookies(user_id)
+        
+        # 确定要查询的cookie_ids
+        if cookie_id and cookie_id in user_cookies:
+            cookie_ids = [cookie_id]
+        else:
+            cookie_ids = list(user_cookies.keys())
+        
+        # 使用分页查询
+        result = db_manager.get_orders_paginated(
+            cookie_ids=cookie_ids,
+            status=status,
+            page=page,
+            page_size=page_size
+        )
 
-        # 获取所有订单数据
-        all_orders = []
-        for cookie_id in user_cookies.keys():
-            orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
-            # 为每个订单添加cookie_id信息
-            for order in orders:
-                order['cookie_id'] = cookie_id
-                all_orders.append(order)
-
-        # 按创建时间倒序排列
-        all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-
-        log_with_user('info', f"用户订单查询成功，共 {len(all_orders)} 条记录", current_user)
-        return {"success": True, "data": all_orders, "total": len(all_orders)}
+        log_with_user('info', f"用户订单查询成功，第{page}页，共 {result['total']} 条记录", current_user)
+        return {
+            "success": True,
+            "data": result['orders'],
+            "total": result['total'],
+            "page": result['page'],
+            "page_size": result['page_size'],
+            "total_pages": result['total_pages']
+        }
 
     except Exception as e:
         log_with_user('error', f"查询用户订单失败: {str(e)}", current_user)
