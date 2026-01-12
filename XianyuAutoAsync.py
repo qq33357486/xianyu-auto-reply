@@ -14,8 +14,9 @@ from utils.xianyu_utils import (
 )
 from config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
-    TOKEN_REFRESH_INTERVAL, TOKEN_RETRY_INTERVAL, COOKIES_STR,
-    LOG_CONFIG, AUTO_REPLY, DEFAULT_HEADERS, WEBSOCKET_HEADERS,
+    TOKEN_REFRESH_INTERVAL, TOKEN_RETRY_INTERVAL, TOKEN_REFRESH_BUFFER,
+    PENDING_CONFIRM_RETRY_INTERVAL, PENDING_CONFIRM_MAX_AGE,
+    COOKIES_STR, LOG_CONFIG, AUTO_REPLY, DEFAULT_HEADERS, WEBSOCKET_HEADERS,
     APP_CONFIG, API_ENDPOINTS
 )
 import sys
@@ -702,9 +703,12 @@ class XianyuLive:
         # Token刷新相关配置
         self.token_refresh_interval = TOKEN_REFRESH_INTERVAL
         self.token_retry_interval = TOKEN_RETRY_INTERVAL
+        self.token_refresh_buffer = TOKEN_REFRESH_BUFFER  # 提前刷新缓冲时间
         self.last_token_refresh_time = 0
         self.current_token = None
         self.token_refresh_task = None
+        self.token_refresh_retry_count = 0  # Token刷新连续失败次数
+        self.max_token_refresh_retries = 3  # 最大连续重试次数
         self.connection_restart_flag = False  # 连接重启标志
 
         # 通知防重复机制
@@ -751,6 +755,9 @@ class XianyuLive:
         # 待确认发货队列（Token过期时暂存订单，刷新成功后重试）
         self.pending_confirm_orders = []  # [(order_id, item_id, add_time), ...]
         self.pending_confirm_lock = asyncio.Lock()
+        self.pending_confirm_retry_task = None  # 待确认队列定时重试任务
+        self.pending_confirm_retry_interval = PENDING_CONFIRM_RETRY_INTERVAL  # 重试间隔
+        self.pending_confirm_max_age = PENDING_CONFIRM_MAX_AGE  # 订单最大保留时间
 
         # 滑块验证相关
         self.captcha_verification_count = 0  # 滑块验证次数计数器
@@ -5339,7 +5346,7 @@ class XianyuLive:
             return obj
 
     async def token_refresh_loop(self):
-        """Token刷新循环"""
+        """Token刷新循环 - 增强版，支持主动刷新和重试机制"""
         try:
             while True:
                 try:
@@ -5350,15 +5357,20 @@ class XianyuLive:
                         break
 
                     current_time = time.time()
-                    if current_time - self.last_token_refresh_time >= self.token_refresh_interval:
-                        logger.info("Token即将过期，准备刷新...")
-                        new_token = await self.refresh_token()
+                    time_since_refresh = current_time - self.last_token_refresh_time
+                    
+                    # 计算有效的刷新间隔（考虑提前刷新缓冲）
+                    effective_refresh_interval = max(self.token_refresh_interval - self.token_refresh_buffer, 1800)
+                    
+                    if time_since_refresh >= effective_refresh_interval:
+                        logger.info(f"【{self.cookie_id}】Token即将过期（已过{time_since_refresh/60:.1f}分钟），主动刷新...")
+                        
+                        # 使用带重试的刷新机制
+                        new_token = await self._refresh_token_with_retry()
+                        
                         if new_token:
                             logger.info(f"【{self.cookie_id}】Token刷新成功，将关闭WebSocket以使用新Token重连")
-                            
-                            # Token刷新成功后，需要关闭WebSocket连接，让它用新Token重新连接
-                            # 原因：WebSocket连接建立时使用的是旧Token，新Token需要重新建立连接才能生效
-                            # 注意：只关闭WebSocket，不重启整个实例（后台任务继续运行）
+                            self.token_refresh_retry_count = 0  # 重置重试计数
                             
                             # 关闭当前WebSocket连接
                             if self.ws and not self.ws.closed:
@@ -5369,44 +5381,152 @@ class XianyuLive:
                                 except Exception as close_e:
                                     logger.warning(f"【{self.cookie_id}】关闭WebSocket时出错: {self._safe_str(close_e)}")
                             
-                            # 退出Token刷新循环，让main循环重新建立连接
-                            # 后台任务（心跳、清理等）继续运行
                             logger.info(f"【{self.cookie_id}】Token刷新完成，WebSocket将使用新Token重新连接")
                             break
                         else:
-                            # 根据上一次刷新状态决定日志级别（冷却/已重启为正常情况）
+                            # 刷新失败，增加重试计数
+                            self.token_refresh_retry_count += 1
+                            
                             if getattr(self, 'last_token_refresh_status', None) in ("skipped_cooldown", "restarted_after_cookie_refresh"):
                                 logger.info(f"【{self.cookie_id}】Token刷新未执行或已重启（正常），将在{self.token_retry_interval // 60}分钟后重试")
                             else:
-                                logger.error(f"【{self.cookie_id}】Token刷新失败，将在{self.token_retry_interval // 60}分钟后重试")
+                                logger.error(f"【{self.cookie_id}】Token刷新失败（第{self.token_refresh_retry_count}次），将在{self.token_retry_interval // 60}分钟后重试")
 
-                            # 清空当前token，确保下次重试时重新获取
                             self.current_token = None
-
-                            # 发送Token刷新失败通知
                             await self.send_token_refresh_notification("Token定时刷新失败，将自动重试", "token_scheduled_refresh_failed")
                             await self._interruptible_sleep(self.token_retry_interval)
                             continue
                     await self._interruptible_sleep(60)
                 except asyncio.CancelledError:
-                    # 收到取消信号，立即退出循环
                     logger.info(f"【{self.cookie_id}】Token刷新循环收到取消信号，准备退出")
                     raise
                 except Exception as e:
                     logger.error(f"Token刷新循环出错: {self._safe_str(e)}")
-                    # 出错后也等待1分钟再重试，使用可中断的sleep
                     try:
                         await self._interruptible_sleep(60)
                     except asyncio.CancelledError:
                         logger.info(f"【{self.cookie_id}】Token刷新循环在重试等待时收到取消信号，准备退出")
                         raise
         except asyncio.CancelledError:
-            # 确保CancelledError被正确传播
             logger.info(f"【{self.cookie_id}】Token刷新循环已取消，正在退出...")
             raise
         finally:
-            # 确保任务能正常结束
             logger.info(f"【{self.cookie_id}】Token刷新循环已退出")
+
+    async def _refresh_token_with_retry(self, max_retries: int = None) -> str:
+        """带重试机制的Token刷新
+        
+        Args:
+            max_retries: 最大重试次数，默认使用 self.max_token_refresh_retries
+            
+        Returns:
+            str: 新Token，失败返回None
+        """
+        if max_retries is None:
+            max_retries = self.max_token_refresh_retries
+        
+        retry_delays = [5, 15, 30]  # 递增重试间隔（秒）
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"【{self.cookie_id}】Token刷新尝试 {attempt + 1}/{max_retries}...")
+                new_token = await self.refresh_token()
+                
+                if new_token:
+                    logger.info(f"【{self.cookie_id}】Token刷新成功（第{attempt + 1}次尝试）")
+                    return new_token
+                
+                # 刷新返回None但没有异常，检查是否是正常跳过
+                if getattr(self, 'last_token_refresh_status', None) in ("skipped_cooldown", "restarted_after_cookie_refresh"):
+                    logger.info(f"【{self.cookie_id}】Token刷新被跳过（冷却中或已重启），不再重试")
+                    return None
+                
+                # 刷新失败，等待后重试
+                if attempt < max_retries - 1:
+                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                    logger.warning(f"【{self.cookie_id}】Token刷新失败，{delay}秒后重试...")
+                    await asyncio.sleep(delay)
+                    
+            except asyncio.CancelledError:
+                logger.info(f"【{self.cookie_id}】Token刷新重试被取消")
+                raise
+            except Exception as e:
+                logger.error(f"【{self.cookie_id}】Token刷新异常（第{attempt + 1}次）: {self._safe_str(e)}")
+                if attempt < max_retries - 1:
+                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                    logger.warning(f"【{self.cookie_id}】{delay}秒后重试...")
+                    await asyncio.sleep(delay)
+        
+        logger.error(f"【{self.cookie_id}】Token刷新失败，已达最大重试次数 {max_retries}")
+        return None
+
+    async def pending_confirm_retry_loop(self):
+        """待确认发货队列定时重试循环
+        
+        定期检查待确认队列，清理过期订单，并在Token有效时重试确认发货
+        """
+        try:
+            while True:
+                try:
+                    # 检查账号是否启用
+                    from cookie_manager import manager as cookie_manager
+                    if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                        logger.info(f"【{self.cookie_id}】账号已禁用，停止待确认队列重试循环")
+                        break
+                    
+                    await self._interruptible_sleep(self.pending_confirm_retry_interval)
+                    
+                    async with self.pending_confirm_lock:
+                        if not self.pending_confirm_orders:
+                            continue
+                        
+                        current_time = time.time()
+                        queue_length = len(self.pending_confirm_orders)
+                        logger.info(f"【{self.cookie_id}】定时检查待确认队列，当前{queue_length}个订单")
+                        
+                        # 清理过期订单
+                        expired_orders = []
+                        valid_orders = []
+                        for order_id, item_id, add_time in self.pending_confirm_orders:
+                            age = current_time - add_time
+                            if age > self.pending_confirm_max_age:
+                                expired_orders.append((order_id, age))
+                            else:
+                                valid_orders.append((order_id, item_id, add_time))
+                        
+                        if expired_orders:
+                            for order_id, age in expired_orders:
+                                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过{age/60:.1f}分钟，已移除")
+                            self.pending_confirm_orders = valid_orders
+                            
+                            # 发送告警通知
+                            await self.send_token_refresh_notification(
+                                f"待确认发货队列有{len(expired_orders)}个订单超时未处理，请检查Token状态",
+                                "pending_confirm_expired"
+                            )
+                    
+                    # 如果有有效订单且Token存在，尝试处理
+                    if valid_orders and self.current_token:
+                        logger.info(f"【{self.cookie_id}】Token有效，开始处理待确认队列...")
+                        await self.process_pending_confirm_orders()
+                    elif valid_orders and not self.current_token:
+                        logger.warning(f"【{self.cookie_id}】待确认队列有{len(valid_orders)}个订单，但Token无效，尝试刷新...")
+                        new_token = await self._refresh_token_with_retry(max_retries=2)
+                        if new_token:
+                            await self.process_pending_confirm_orders()
+                        
+                except asyncio.CancelledError:
+                    logger.info(f"【{self.cookie_id}】待确认队列重试循环收到取消信号")
+                    raise
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】待确认队列重试循环出错: {self._safe_str(e)}")
+                    await asyncio.sleep(60)
+                    
+        except asyncio.CancelledError:
+            logger.info(f"【{self.cookie_id}】待确认队列重试循环已取消")
+            raise
+        finally:
+            logger.info(f"【{self.cookie_id}】待确认队列重试循环已退出")
 
     async def create_chat(self, ws, toid, item_id='891198795482'):
         msg = {
@@ -8228,10 +8348,17 @@ class XianyuLive:
                             else:
                                 logger.info(f"【{self.cookie_id}】Cookie刷新任务已在运行，跳过启动")
 
+                            if not self.pending_confirm_retry_task or self.pending_confirm_retry_task.done():
+                                logger.info(f"【{self.cookie_id}】启动待确认队列重试任务...")
+                                self.pending_confirm_retry_task = asyncio.create_task(self.pending_confirm_retry_loop())
+                                tasks_started.append("待确认队列重试")
+                            else:
+                                logger.info(f"【{self.cookie_id}】待确认队列重试任务已在运行，跳过启动")
+
                             # 记录所有后台任务状态
                             if tasks_started:
                                 logger.info(f"【{self.cookie_id}】✅ 新启动的任务: {', '.join(tasks_started)}")
-                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'})")
+                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'}), 待确认队列({'运行中' if self.pending_confirm_retry_task and not self.pending_confirm_retry_task.done() else '已启动'})")
                             
                             logger.info(f"【{self.cookie_id}】开始监听WebSocket消息...")
                             logger.info(f"【{self.cookie_id}】WebSocket连接状态正常，等待服务器消息...")

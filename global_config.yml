@@ -58,8 +58,11 @@ MANUAL_MODE:
   timeout: 3600
   toggle_keywords: []
 MESSAGE_EXPIRE_TIME: 300000
-TOKEN_REFRESH_INTERVAL: 3600  # 从3600秒(1小时)增加到72000秒(20小时)
-TOKEN_RETRY_INTERVAL: 600    # 从300秒(5分钟)增加到7200秒(2小时)
+TOKEN_REFRESH_INTERVAL: 2700  # 45分钟刷新一次，确保在1小时有效期前刷新
+TOKEN_RETRY_INTERVAL: 300     # 刷新失败后5分钟重试
+TOKEN_REFRESH_BUFFER: 900     # 提前15分钟触发刷新
+PENDING_CONFIRM_RETRY_INTERVAL: 300  # 待确认队列每5分钟重试一次
+PENDING_CONFIRM_MAX_AGE: 1800        # 待确认订单最大保留30分钟
 SLIDER_VERIFICATION:
   max_concurrent: 3  # 滑块验证最大并发数
   wait_timeout: 60   # 等待排队超时时间（秒）
