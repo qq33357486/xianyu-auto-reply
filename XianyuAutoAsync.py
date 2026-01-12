@@ -5476,6 +5476,9 @@ class XianyuLive:
                     
                     await self._interruptible_sleep(self.pending_confirm_retry_interval)
                     
+                    # 初始化变量（修复作用域问题，确保continue后变量有定义）
+                    valid_orders = []
+                    
                     async with self.pending_confirm_lock:
                         if not self.pending_confirm_orders:
                             continue
@@ -5486,7 +5489,6 @@ class XianyuLive:
                         
                         # 清理过期订单
                         expired_orders = []
-                        valid_orders = []
                         for order_id, item_id, add_time in self.pending_confirm_orders:
                             age = current_time - add_time
                             if age > self.pending_confirm_max_age:
@@ -5505,7 +5507,7 @@ class XianyuLive:
                                 "pending_confirm_expired"
                             )
                     
-                    # 如果有有效订单且Token存在，尝试处理
+                    # 在锁外处理（valid_orders已在锁内正确赋值）
                     if valid_orders and self.current_token:
                         logger.info(f"【{self.cookie_id}】Token有效，开始处理待确认队列...")
                         await self.process_pending_confirm_orders()
