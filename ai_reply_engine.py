@@ -380,6 +380,19 @@ class AIReplyEngine:
                 max_discount_percent = settings.get('max_discount_percent', 10)
                 max_discount_amount = settings.get('max_discount_amount', 100)
 
+                # 处理图片消息：当用户发送图片时，message 可能为空或 "[图片]"
+                # 需要明确告知 AI 查看并分析图片
+                if image_urls and len(image_urls) > 0:
+                    # 用户发送了图片
+                    if not message or message.strip() in ["", "[图片]", "图片"]:
+                        # 纯图片消息，没有附带文字
+                        user_message_text = f"用户发送了 {len(image_urls)} 张图片，请仔细查看图片内容并给出相关回复。如果图片是商品截图、问题截图或其他咨询相关内容，请针对性回答。"
+                    else:
+                        # 图片+文字消息
+                        user_message_text = f"{message}\n\n（用户同时发送了 {len(image_urls)} 张图片，请结合图片内容回复）"
+                else:
+                    user_message_text = message
+
                 user_prompt = f"""商品信息：
 {item_desc}
 
@@ -392,7 +405,7 @@ class AIReplyEngine:
 - 最大优惠百分比：{max_discount_percent}%
 - 最大优惠金额：{max_discount_amount}元
 
-用户消息：{message}
+用户消息：{user_message_text}
 
 请根据以上信息生成回复："""
 

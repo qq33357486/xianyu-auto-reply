@@ -2302,7 +2302,7 @@ class XianyuLive:
             
             try:
                 logger.info(f"【{self.cookie_id}】重试确认发货: 订单ID={order_id}")
-                result = await self._handle_auto_confirm(order_id, item_id)
+                result = await self.auto_confirm(order_id, item_id)
                 if result and result.get('success'):
                     success_count += 1
                 else:
