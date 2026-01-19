@@ -1192,15 +1192,15 @@ export function Accounts() {
                   </div>
 
                   <div className="input-group">
-                    <label className="input-label">自定义提示词 (JSON格式)</label>
+                    <label className="input-label">自定义提示词</label>
                     <textarea
                       value={aiCustomPrompts}
                       onChange={(e) => setAiCustomPrompts(e.target.value)}
-                      className="input-ios h-32 resize-none font-mono text-xs"
-                      placeholder='{"classify": "分类提示词", "price": "议价提示词", "tech": "技术提示词", "default": "默认提示词"}'
+                      className="input-ios h-40 resize-none text-sm"
+                      placeholder="留空使用系统默认提示词。支持 Markdown 格式，AI 会根据此提示词智能回复买家消息。"
                     />
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                      留空使用系统默认提示词。格式：{`{"classify": "...", "price": "...", "tech": "...", "default": "..."}`}
+                      留空使用系统默认提示词。AI 会自动判断买家意图（议价、咨询、售后等）并智能回复。
                     </p>
                   </div>
                 </>

@@ -29,35 +29,30 @@ class AIReplyEngine:
         # self.clients = {}  # 已移除
         # self.agents = {}   # 已移除
         # self.client_last_used = {}  # 已移除
-        self._init_default_prompts()
+        self._init_default_prompt()
         # 用于控制同一chat_id消息的串行处理
         self._chat_locks = {}
         self._chat_locks_lock = threading.Lock()
     
-    def _init_default_prompts(self):
-        """初始化默认提示词"""
-        self.default_prompts = {
-            'classify': '''你是一个意图分类专家...（此提示词已不再被 detect_intent 使用）''',
-            
-            'price': '''你是一位经验丰富的销售专家，擅长议价。
-语言要求：简短直接，每句≤10字，总字数≤40字。
-议价策略：
-1. 根据议价次数递减优惠：第1次小幅优惠，第2次中等优惠，第3次最大优惠
-2. 接近最大议价轮数时要坚持底线，强调商品价值
-3. 优惠不能超过设定的最大百分比和金额
-4. 语气要友好但坚定，突出商品优势
-注意：结合商品信息、对话历史和议价设置，给出合适的回复。''',
-            
-            'tech': '''你是一位技术专家，专业解答产品相关问题。
-语言要求：简短专业，每句≤10字，总字数≤40字。
-回答重点：产品功能、使用方法、注意事项。
-注意：基于商品信息回答，避免过度承诺。''',
-            
-            'default': '''你是一位资深电商卖家，提供优质客服。
-语言要求：简短友好，每句≤10字，总字数≤40字。
-回答重点：商品介绍、物流、售后等常见问题。
-注意：结合商品信息，给出实用建议。'''
-        }
+    def _init_default_prompt(self):
+        """初始化默认提示词（统一提示词，不再分类）"""
+        self.default_system_prompt = '''你是一位资深闲鱼卖家客服，负责回复买家咨询。
+
+## 回复要求
+- 语言简短友好，每句≤15字，总字数≤50字
+- 像真人聊天一样自然，不要太官方
+- 根据对话上下文智能判断买家意图并回复
+
+## 你需要处理的场景
+1. **议价**：友好但坚定，可适当给小优惠，但要守住底线
+2. **商品咨询**：基于商品信息如实回答，不过度承诺
+3. **物流售后**：耐心解答，给出实用建议
+4. **闲聊**：简短回应，引导回到交易
+
+## 注意事项
+- 结合商品信息和对话历史回复
+- 如果买家发图片，仔细查看并针对性回答
+- 议价时参考议价设置中的优惠限制'''
     
     def _create_openai_client(self, cookie_id: str) -> Optional[OpenAI]:
         """
@@ -244,44 +239,21 @@ class AIReplyEngine:
         settings = db_manager.get_ai_reply_settings(cookie_id)
         return settings['ai_enabled']
     
-    def detect_intent(self, message: str, cookie_id: str) -> str:
-        """
-        检测用户消息意图 (基于关键词的本地检测)
-        修复 P1-1: 移除了AI调用，以降低成本和延迟。
-        """
-        try:
-            # 检查AI是否启用，如果未启用，不应执行任何AI相关逻辑
-            # 注意：此检查在 generate_reply 的开头已经做过，但保留此处作为第二道防线
-            settings = db_manager.get_ai_reply_settings(cookie_id)
-            if not settings['ai_enabled']:
-                return 'default'
-
-            msg_lower = message.lower()
-
-            # 价格相关关键词
-            price_keywords = [
-                '便宜', '优惠', '刀', '降价', '包邮', '价格', '多少钱', '能少', '还能', '最低', '底价',
-                '实诚价', '到100', '能到', '包个邮', '给个价', '什么价' # <-- 增加这些“口语化”的词
-            ]
-            
-            # 同样，你也可以通过正则表达式来匹配纯数字，比如 "100" "80"
-            # 但那可能有点复杂，先加关键词是最小改动
-            if any(kw in msg_lower for kw in price_keywords):
-                logger.debug(f"本地意图检测: price ({message})")
-                return 'price'
-
-            # 技术相关关键词
-            tech_keywords = ['怎么用', '参数', '坏了', '故障', '设置', '说明书', '功能', '用法', '教程', '驱动']
-            if any(kw in msg_lower for kw in tech_keywords):
-                logger.debug(f"本地意图检测: tech ({message})")
-                return 'tech'
-            
-            logger.debug(f"本地意图检测: default ({message})")
-            return 'default'
-        
-        except Exception as e:
-            logger.error(f"本地意图检测失败 {cookie_id}: {e}")
-            return 'default'
+    def _get_system_prompt(self, settings: dict) -> str:
+        """获取系统提示词（优先使用自定义，否则使用默认）"""
+        custom_prompt = settings.get('custom_prompts', '')
+        if custom_prompt:
+            # 兼容旧的 JSON 格式：如果是 JSON，取 default 值
+            if custom_prompt.strip().startswith('{'):
+                try:
+                    prompts_dict = json.loads(custom_prompt)
+                    # 优先取 default，否则取第一个值
+                    return prompts_dict.get('default', list(prompts_dict.values())[0] if prompts_dict else self.default_system_prompt)
+                except json.JSONDecodeError:
+                    pass
+            # 新格式：直接是 Markdown 字符串
+            return custom_prompt
+        return self.default_system_prompt
     
     def _get_chat_lock(self, chat_id: str) -> threading.Lock:
         """获取指定chat_id的锁，如果不存在则创建"""
@@ -309,12 +281,8 @@ class AIReplyEngine:
             return None
         
         try:
-            # 先检测意图（用于后续保存）
-            intent = self.detect_intent(message, cookie_id)
-            logger.info(f"检测到意图: {intent} (账号: {cookie_id})")
-            
             # 在锁外先保存用户消息到数据库，让所有消息都能立即保存
-            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", message, intent)
+            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", message)
             
             # 如果调用方已经实现了去抖（debounce），可以通过 skip_wait=True 跳过内部等待
             if not skip_wait:
@@ -354,18 +322,8 @@ class AIReplyEngine:
                 # 4. 获取议价次数
                 bargain_count = self.get_bargain_count(chat_id, cookie_id)
 
-                # 5. 检查议价轮数限制 (P0-1 竞争条件风险点 - 遵照指示未修改)
-                if intent == "price":
-                    max_bargain_rounds = settings.get('max_bargain_rounds', 3)
-                    if bargain_count >= max_bargain_rounds:
-                        logger.info(f"议价次数已达上限 ({bargain_count}/{max_bargain_rounds})，拒绝继续议价")
-                        refuse_reply = f"抱歉，这个价格已经是最优惠的了，不能再便宜了哦！"
-                        self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", refuse_reply, intent)
-                        return refuse_reply
-
-                # 6. 构建提示词
-                custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
-                system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
+                # 5. 获取系统提示词（统一提示词，不再分类）
+                system_prompt = self._get_system_prompt(settings)
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"
@@ -449,12 +407,7 @@ class AIReplyEngine:
                     reply = self._call_openai_api(client, settings, messages, max_tokens=8319, temperature=0.7)
 
                 # 11. 保存AI回复到对话记录
-                self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
-
-                # 12. 更新议价次数 (此方法已在 get_bargain_count 中通过 SQL COUNT(*) 隐式实现)
-                if intent == "price":
-                    # self.increment_bargain_count(chat_id, cookie_id) # 此行原先就没有，保持不变
-                    pass
+                self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply)
                 
                 logger.info(f"AI回复生成成功 (账号: {cookie_id}): {reply}")
                 return reply

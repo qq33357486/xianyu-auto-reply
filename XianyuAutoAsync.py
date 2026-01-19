@@ -778,10 +778,15 @@ class XianyuLive:
         self.active_message_tasks = 0  # 当前活跃的消息处理任务数
 
         # 消息防抖管理器：用于处理用户连续发送消息的情况
-        # {chat_id: {'task': asyncio.Task, 'last_message': dict, 'timer': float}}
+        # {chat_id: {'task': asyncio.Task, 'messages': list, 'timer': float, 'ai_task': asyncio.Task}}
         self.message_debounce_tasks = {}  # 存储每个chat_id的防抖任务
-        self.message_debounce_delay = 1  # 防抖延迟时间（秒）：用户停止发送消息1秒后才回复
+        self.message_debounce_delay = 3  # 防抖延迟时间（秒）：用户停止发送消息3秒后才回复
         self.message_debounce_lock = asyncio.Lock()  # 防抖任务管理的锁
+        
+        # 进行中的AI请求跟踪（用于请求中断重发）
+        # {chat_id: asyncio.Task}
+        self.pending_ai_tasks = {}
+        self.pending_ai_tasks_lock = asyncio.Lock()
         
         # 消息去重机制：防止同一条消息被处理多次
         self.processed_message_ids = {}  # 存储已处理的消息ID和时间戳 {message_id: timestamp}
@@ -3757,18 +3762,36 @@ class XianyuLive:
                     'desc': item_info_raw.get('item_detail', '暂无商品描述')
                 }
 
-            # 生成AI回复
-            # 由于外部已实现防抖机制，跳过内部等待（skip_wait=True）
-            reply = ai_reply_engine.generate_reply(
-                message=send_message,
-                item_info=item_info,
-                chat_id=chat_id,
-                cookie_id=self.cookie_id,
-                user_id=send_user_id,
-                item_id=item_id,
-                skip_wait=True,  # 跳过内部等待，因为外部已实现防抖
-                image_urls=image_urls  # 传递图片URL列表
-            )
+            # 创建AI回复任务并跟踪（用于请求中断重发）
+            # 使用 asyncio.to_thread 避免阻塞事件循环
+            async def ai_task():
+                return await asyncio.to_thread(
+                    ai_reply_engine.generate_reply,
+                    send_message,
+                    item_info,
+                    chat_id,
+                    self.cookie_id,
+                    send_user_id,
+                    item_id,
+                    True,  # skip_wait=True，跳过内部等待，因为外部已实现防抖
+                    image_urls  # 传递图片URL列表
+                )
+            
+            # 注册AI任务以便在新消息到来时取消
+            task = asyncio.create_task(ai_task())
+            async with self.pending_ai_tasks_lock:
+                self.pending_ai_tasks[chat_id] = task
+            
+            try:
+                reply = await task
+            except asyncio.CancelledError:
+                logger.warning(f"【{self.cookie_id}】AI请求被取消（用户发送了新消息）")
+                return None
+            finally:
+                # 清理已完成的任务
+                async with self.pending_ai_tasks_lock:
+                    if chat_id in self.pending_ai_tasks and self.pending_ai_tasks[chat_id] == task:
+                        del self.pending_ai_tasks[chat_id]
 
             if reply:
                 logger.info(f"【{self.cookie_id}】AI回复生成成功: {reply}")
@@ -7452,27 +7475,45 @@ class XianyuLive:
                         del self.processed_message_ids[msg_id]
                     logger.info(f"【{self.cookie_id}】消息ID去重字典过大，已清理 {remove_count} 个最旧记录")
         
+        # 如果有进行中的AI请求，取消它（请求中断重发机制）
+        async with self.pending_ai_tasks_lock:
+            if chat_id in self.pending_ai_tasks:
+                old_ai_task = self.pending_ai_tasks[chat_id]
+                if old_ai_task and not old_ai_task.done():
+                    old_ai_task.cancel()
+                    logger.warning(f"【{self.cookie_id}】取消chat_id {chat_id} 进行中的AI请求，将重新发起")
+                del self.pending_ai_tasks[chat_id]
+        
         async with self.message_debounce_lock:
-            # 如果该chat_id已有防抖任务，取消它
+            # 如果该chat_id已有防抖任务，取消它并收集消息
             if chat_id in self.message_debounce_tasks:
                 old_task = self.message_debounce_tasks[chat_id].get('task')
                 if old_task and not old_task.done():
                     old_task.cancel()
-                    logger.warning(f"【{self.cookie_id}】取消chat_id {chat_id} 的旧防抖任务")
+                    logger.warning(f"【{self.cookie_id}】取消chat_id {chat_id} 的旧防抖任务，收集新消息")
+                
+                # 收集之前的消息
+                existing_messages = self.message_debounce_tasks[chat_id].get('messages', [])
+            else:
+                existing_messages = []
             
-            # 更新最后一条消息信息
+            # 添加当前消息到收集列表
+            current_msg = {
+                'message_data': message_data,
+                'websocket': websocket,
+                'send_user_name': send_user_name,
+                'send_user_id': send_user_id,
+                'send_message': send_message,
+                'item_id': item_id,
+                'msg_time': msg_time,
+                'image_urls': image_urls
+            }
+            existing_messages.append(current_msg)
+            
+            # 更新防抖任务信息
             current_timer = time.time()
             self.message_debounce_tasks[chat_id] = {
-                'last_message': {
-                    'message_data': message_data,
-                    'websocket': websocket,
-                    'send_user_name': send_user_name,
-                    'send_user_id': send_user_id,
-                    'send_message': send_message,
-                    'item_id': item_id,
-                    'msg_time': msg_time,
-                    'image_urls': image_urls
-                },
+                'messages': existing_messages,
                 'timer': current_timer
             }
             
@@ -7494,24 +7535,42 @@ class XianyuLive:
                             logger.warning(f"【{self.cookie_id}】chat_id {chat_id} 在防抖期间有新消息，跳过旧消息处理")
                             return
                         
-                        # 获取最后一条消息
-                        last_msg = debounce_info['last_message']
+                        # 获取收集的所有消息
+                        collected_messages = debounce_info['messages']
                         
                         # 从防抖任务中移除
                         del self.message_debounce_tasks[chat_id]
                     
-                    # 处理最后一条消息
-                    logger.info(f"【{self.cookie_id}】防抖延迟结束，开始处理chat_id {chat_id} 的最后一条消息: {last_msg['send_message'][:30]}...")
+                    # 合并多条消息
+                    if len(collected_messages) > 1:
+                        # 多条消息，合并文本内容
+                        combined_message = "\n".join([msg['send_message'] for msg in collected_messages])
+                        # 合并图片URL
+                        all_image_urls = []
+                        for msg in collected_messages:
+                            if msg.get('image_urls'):
+                                all_image_urls.extend(msg['image_urls'])
+                        logger.info(f"【{self.cookie_id}】防抖延迟结束，合并 {len(collected_messages)} 条消息: {combined_message[:50]}...")
+                    else:
+                        # 单条消息
+                        combined_message = collected_messages[0]['send_message']
+                        all_image_urls = collected_messages[0].get('image_urls')
+                        logger.info(f"【{self.cookie_id}】防抖延迟结束，处理消息: {combined_message[:30]}...")
+                    
+                    # 使用最后一条消息的元数据
+                    last_msg = collected_messages[-1]
+                    
+                    # 处理合并后的消息
                     await self._process_chat_message_reply(
                         last_msg['message_data'],
                         last_msg['websocket'],
                         last_msg['send_user_name'],
                         last_msg['send_user_id'],
-                        last_msg['send_message'],
+                        combined_message,  # 使用合并后的消息
                         last_msg['item_id'],
                         chat_id,
                         last_msg['msg_time'],
-                        last_msg.get('image_urls')
+                        all_image_urls if all_image_urls else None  # 使用合并后的图片
                     )
                     
                 except asyncio.CancelledError:
@@ -7525,7 +7584,7 @@ class XianyuLive:
             
             task = self._create_tracked_task(debounce_task())
             self.message_debounce_tasks[chat_id]['task'] = task
-            logger.warning(f"【{self.cookie_id}】为chat_id {chat_id} 创建防抖任务，延迟 {self.message_debounce_delay} 秒")
+            logger.warning(f"【{self.cookie_id}】为chat_id {chat_id} 创建防抖任务，延迟 {self.message_debounce_delay} 秒，当前收集 {len(existing_messages)} 条消息")
 
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
