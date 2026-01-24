@@ -537,6 +537,70 @@ export function Settings() {
           </div>
           )}
 
+          {/* 超级鹰打码平台配置 - 仅管理员可见 */}
+          {isAdmin && (
+          <div className="vben-card">
+            <div className="vben-card-header">
+              <h2 className="vben-card-title">
+                <Bot className="w-4 h-4" />
+                超级鹰打码平台
+              </h2>
+            </div>
+            <div className="vben-card-body space-y-4">
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                配置超级鹰打码平台，用于滑块验证失败时自动调用（需先在 
+                <a href="https://www.chaojiying.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">chaojiying.com</a> 
+                注册账号并充值）
+              </p>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings?.chaojiying_enabled || false}
+                    onChange={(e) => setSettings(s => s ? { ...s, chaojiying_enabled: e.target.checked } : null)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
+                </label>
+                <span className="text-sm text-slate-600 dark:text-slate-300">启用超级鹰打码</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="input-group">
+                  <label className="input-label">用户名</label>
+                  <input
+                    type="text"
+                    value={settings?.chaojiying_username || ''}
+                    onChange={(e) => setSettings(s => s ? { ...s, chaojiying_username: e.target.value } : null)}
+                    placeholder="超级鹰账号"
+                    className="input-ios"
+                  />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">密码</label>
+                  <input
+                    type="password"
+                    value={settings?.chaojiying_password || ''}
+                    onChange={(e) => setSettings(s => s ? { ...s, chaojiying_password: e.target.value } : null)}
+                    placeholder="超级鹰密码"
+                    className="input-ios"
+                  />
+                </div>
+              </div>
+              <div className="input-group">
+                <label className="input-label">软件ID</label>
+                <input
+                  type="text"
+                  value={settings?.chaojiying_softid || ''}
+                  onChange={(e) => setSettings(s => s ? { ...s, chaojiying_softid: e.target.value } : null)}
+                  placeholder="在超级鹰用户中心创建"
+                  className="input-ios"
+                />
+                <p className="text-xs text-slate-400 mt-1">登录超级鹰后台，在"软件ID"处创建</p>
+              </div>
+            </div>
+          </div>
+          )}
+
           {/* 密码修改 */}
           <div className="vben-card">
             <div className="vben-card-header">

@@ -195,6 +195,11 @@ export interface SystemSettings {
   smtp_use_ssl?: boolean
   // API安全
   qq_reply_secret_key?: string
+  // 超级鹰打码平台配置
+  chaojiying_enabled?: boolean
+  chaojiying_username?: string
+  chaojiying_password?: string
+  chaojiying_softid?: string
   [key: string]: unknown
 }
 

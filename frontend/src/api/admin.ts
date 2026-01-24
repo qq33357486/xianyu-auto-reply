@@ -64,7 +64,7 @@ export const getSystemLogs = async (params?: { page?: number; limit?: number; le
 
 // 清空系统日志
 export const clearSystemLogs = (): Promise<ApiResponse> => {
-  return post('/admin/logs/clear')
+  return post('/logs/clear')
 }
 
 // ========== 风控日志 ==========

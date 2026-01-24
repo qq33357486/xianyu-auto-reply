@@ -40,6 +40,57 @@ def log_captcha_event(cookie_id: str, event_type: str, success: bool = None, det
         logger.error(f"记录滑块验证日志失败: {e}")
 
 
+def chaojiying_recognize(image_bytes: bytes) -> dict:
+    """调用超级鹰打码平台识别滑块位置
+    codetype=9901: 单图形块，返回中心点坐标 x,y
+    """
+    try:
+        from db_manager import db_manager
+        
+        # 从数据库读取配置
+        enabled = db_manager.get_system_setting('chaojiying_enabled')
+        if enabled not in [True, 'true', '1', 1]:
+            logger.info("超级鹰打码平台未启用")
+            return None
+        
+        username = db_manager.get_system_setting('chaojiying_username') or ''
+        password = db_manager.get_system_setting('chaojiying_password') or ''
+        softid = db_manager.get_system_setting('chaojiying_softid') or ''
+        
+        if not all([username, password, softid]):
+            logger.warning("超级鹰配置不完整，请在系统设置中配置")
+            return None
+        
+        url = "https://upload.chaojiying.net/Upload/Processing.php"
+        data = {
+            'user': username,
+            'pass': password,
+            'softid': softid,
+            'codetype': '9901'
+        }
+        files = {'userfile': ('captcha.png', image_bytes, 'image/png')}
+        response = requests.post(url, data=data, files=files, timeout=30)
+        result = response.json()
+        logger.info(f"超级鹰返回: err_no={result.get('err_no')}, pic_str={result.get('pic_str')}")
+        
+        if result.get('err_no') == 0:
+            # pic_str 格式: "123,45" (x,y坐标)
+            pic_str = result.get('pic_str', '')
+            if ',' in pic_str:
+                coords = pic_str.split(',')
+                return {
+                    'x': int(coords[0]),
+                    'y': int(coords[1]),
+                    'pic_id': result.get('pic_id')
+                }
+        else:
+            logger.warning(f"超级鹰识别失败: {result.get('err_str')}")
+        return None
+    except Exception as e:
+        logger.error(f"超级鹰API调用异常: {e}")
+        return None
+
+
 class DrissionHandler:
     def __init__(
             self, max_retries: int = 3, is_headless: bool = False, maximize_window: bool = True, show_mouse_trace: bool = True
@@ -1303,6 +1354,51 @@ class DrissionHandler:
             verification_duration = time.time() - verification_start_time
             log_captcha_event(self.cookie_id, "滑块验证最终失败", False,
                 f"耗时: {verification_duration:.2f}秒, 滑动次数: {getattr(self, 'slide_attempt', 0)}, 原因: 超过最大重试次数({self.max_retries})")
+
+            # 尝试使用超级鹰打码平台兜底
+            logger.info("尝试使用超级鹰打码平台识别...")
+            try:
+                # 截图整个页面
+                screenshot_bytes = self.page.get_screenshot(as_bytes='png')
+                if screenshot_bytes:
+                    coords = chaojiying_recognize(screenshot_bytes)
+                    if coords:
+                        logger.info(f"超级鹰识别成功，目标坐标: x={coords['x']}, y={coords['y']}")
+                        
+                        # 找到滑块元素并计算滑动距离
+                        slider = self.page.ele('#nc_1_n1z', timeout=3)
+                        if slider:
+                            slider_rect = slider.rect
+                            # 计算需要滑动的距离：目标x坐标 - 滑块当前x坐标
+                            slide_distance = coords['x'] - slider_rect.x - (slider_rect.width // 2)
+                            logger.info(f"计算滑动距离: {slide_distance}px (目标x:{coords['x']} - 滑块x:{slider_rect.x})")
+                            
+                            if slide_distance > 0:
+                                # 执行滑动
+                                self.page.actions.hold(slider).move(slide_distance, 0, duration=0.5).release()
+                                time.sleep(2)
+                                
+                                # 检查是否成功
+                                if '验证通过' in self.page.html or 'SUCCESS' in self.page.html:
+                                    logger.info("超级鹰打码验证成功！")
+                                    log_captcha_event(self.cookie_id, "超级鹰打码成功", True, f"坐标: {coords}")
+                                    
+                                    # 获取cookies
+                                    cookies = self.page.cookies()
+                                    if cookies:
+                                        return '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+                                else:
+                                    logger.warning("超级鹰打码后验证未通过")
+                                    log_captcha_event(self.cookie_id, "超级鹰打码失败", False, "验证未通过")
+                            else:
+                                logger.warning(f"滑动距离无效: {slide_distance}px，跳过滑动")
+                        else:
+                            logger.warning("未找到滑块元素")
+                    else:
+                        logger.warning("超级鹰未返回有效坐标")
+            except Exception as e:
+                logger.error(f"超级鹰打码异常: {e}")
+                log_captcha_event(self.cookie_id, "超级鹰打码异常", False, str(e)[:100])
 
             return None
 

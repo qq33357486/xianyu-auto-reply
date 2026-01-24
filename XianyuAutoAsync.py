@@ -8,6 +8,20 @@ import random
 from enum import Enum
 from loguru import logger
 import websockets
+
+# websockets 15.x 兼容性：检查连接是否关闭
+def _ws_is_closed(ws) -> bool:
+    """检查 WebSocket 连接是否已关闭（兼容 websockets 14.x 和 15.x）"""
+    if ws is None:
+        return True
+    # websockets 15.x 移除了 closed 属性，使用 state 判断
+    if hasattr(ws, 'closed'):
+        return ws.closed
+    elif hasattr(ws, 'state'):
+        from websockets.protocol import State
+        return ws.state == State.CLOSED
+    return True
+
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
     generate_device_id, generate_sign
@@ -1843,7 +1857,7 @@ class XianyuLive:
                         is_ws_connected = (
                             self.connection_state == ConnectionState.CONNECTED and 
                             self.ws and 
-                            not self.ws.closed
+                            not _ws_is_closed(self.ws)
                         )
                         
                         if is_ws_connected:
@@ -1868,7 +1882,7 @@ class XianyuLive:
                 is_ws_connected = (
                     self.connection_state == ConnectionState.CONNECTED and 
                     self.ws and 
-                    not self.ws.closed
+                    not _ws_is_closed(self.ws)
                 )
                 
                 if is_ws_connected:
@@ -2070,7 +2084,7 @@ class XianyuLive:
                     is_ws_connected = (
                         self.connection_state == ConnectionState.CONNECTED and 
                         self.ws and 
-                        not self.ws.closed
+                        not _ws_is_closed(self.ws)
                     )
                     
                     if is_ws_connected:
@@ -2110,7 +2124,7 @@ class XianyuLive:
                 is_ws_connected = (
                     self.connection_state == ConnectionState.CONNECTED and 
                     self.ws and 
-                    not self.ws.closed
+                    not _ws_is_closed(self.ws)
                 )
                 
                 if is_ws_connected:
@@ -5396,7 +5410,7 @@ class XianyuLive:
                             self.token_refresh_retry_count = 0  # 重置重试计数
                             
                             # 关闭当前WebSocket连接
-                            if self.ws and not self.ws.closed:
+                            if self.ws and not _ws_is_closed(self.ws):
                                 try:
                                     logger.info(f"【{self.cookie_id}】关闭当前WebSocket连接以使用新Token重连...")
                                     await self.ws.close()
@@ -5679,7 +5693,7 @@ class XianyuLive:
     async def send_heartbeat(self, ws):
         """发送心跳包"""
         # 检查WebSocket连接状态，如果已关闭则不发送
-        if ws.closed:
+        if _ws_is_closed(ws):
             raise ConnectionError("WebSocket连接已关闭，无法发送心跳")
         
         msg = {
@@ -5714,7 +5728,7 @@ class XianyuLive:
                         break
 
                     # 检查WebSocket连接状态
-                    if ws.closed:
+                    if _ws_is_closed(ws):
                         logger.warning(f"【{self.cookie_id}】WebSocket连接已关闭，停止心跳循环")
                         break
 
@@ -5952,7 +5966,7 @@ class XianyuLive:
                 )
 
                 # 重新启动心跳任务
-                if heartbeat_was_running and self.ws and not self.ws.closed:
+                if heartbeat_was_running and self.ws and not _ws_is_closed(self.ws):
                     logger.warning(f"【{self.cookie_id}】重新启动心跳任务")
                     self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
 
@@ -6002,7 +6016,7 @@ class XianyuLive:
                 self.last_cookie_refresh_time = current_time
             finally:
                 # 确保心跳任务恢复（如果WebSocket仍然连接）
-                if (self.ws and not self.ws.closed and
+                if (self.ws and not _ws_is_closed(self.ws) and
                     (not self.heartbeat_task or self.heartbeat_task.done())):
                     logger.info(f"【{self.cookie_id}】Cookie刷新完成，心跳任务正常运行")
                     self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
@@ -7170,27 +7184,27 @@ class XianyuLive:
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        # 兼容不同版本的websockets库
+        # 兼容不同版本的websockets库，根据版本选择参数
+        import websockets
+        websockets_version = getattr(websockets, '__version__', '0')
+        major_version = 0
         try:
+            major_version = int(websockets_version.split('.')[0])
+        except:
+            pass
+
+        if major_version >= 14:
+            async with websockets.connect(
+                self.base_url,
+                additional_headers=headers
+            ) as websocket:
+                await self._handle_websocket_connection(websocket, toid, item_id, text)
+        else:
             async with websockets.connect(
                 self.base_url,
                 extra_headers=headers
             ) as websocket:
                 await self._handle_websocket_connection(websocket, toid, item_id, text)
-        except TypeError as e:
-            # 安全地检查异常信息
-            error_msg = self._safe_str(e)
-
-            if "extra_headers" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，使用兼容模式")
-                # 使用兼容模式，通过subprotocols传递部分头信息
-                async with websockets.connect(
-                    self.base_url,
-                    additional_headers=headers
-                ) as websocket:
-                    await self._handle_websocket_connection(websocket, toid, item_id, text)
-            else:
-                raise
 
     async def _create_websocket_connection(self, headers):
         """创建WebSocket连接，兼容不同版本的websockets库"""
@@ -7200,37 +7214,28 @@ class XianyuLive:
         websockets_version = getattr(websockets, '__version__', '未知')
         logger.warning(f"websockets库版本: {websockets_version}")
 
+        # websockets 15.x 使用 additional_headers，旧版本使用 extra_headers
+        # 先检查版本决定使用哪个参数
+        major_version = 0
         try:
-            # 尝试使用extra_headers参数
+            major_version = int(websockets_version.split('.')[0])
+        except:
+            pass
+
+        if major_version >= 14:
+            # websockets 14+ 使用 additional_headers
+            logger.info(f"使用 additional_headers 参数 (websockets {websockets_version})")
+            return websockets.connect(
+                self.base_url,
+                additional_headers=headers
+            )
+        else:
+            # 旧版本使用 extra_headers
+            logger.info(f"使用 extra_headers 参数 (websockets {websockets_version})")
             return websockets.connect(
                 self.base_url,
                 extra_headers=headers
             )
-        except Exception as e:
-            # 捕获所有异常类型，不仅仅是TypeError
-            error_msg = self._safe_str(e)
-            logger.warning(f"extra_headers参数失败: {error_msg}")
-
-            if "extra_headers" in error_msg or "unexpected keyword argument" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，尝试additional_headers")
-                # 使用additional_headers参数（较新版本）
-                try:
-                    return websockets.connect(
-                        self.base_url,
-                        additional_headers=headers
-                    )
-                except Exception as e2:
-                    error_msg2 = self._safe_str(e2)
-                    logger.warning(f"additional_headers参数失败: {error_msg2}")
-
-                    if "additional_headers" in error_msg2 or "unexpected keyword argument" in error_msg2:
-                        # 如果都不支持，则不传递headers
-                        logger.warning("websockets库不支持headers参数，使用基础连接模式")
-                        return websockets.connect(self.base_url)
-                    else:
-                        raise e2
-            else:
-                raise e
 
     async def _handle_websocket_connection(self, websocket, toid, item_id, text):
         """处理WebSocket连接的具体逻辑"""

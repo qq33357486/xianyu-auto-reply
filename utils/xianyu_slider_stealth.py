@@ -2331,7 +2331,98 @@ class XianyuSliderStealth:
         # 输出当前统计摘要
         strategy_stats.log_summary()
         
+        # 尝试使用超级鹰打码平台兜底
+        if self._try_chaojiying_fallback():
+            return True
+        
         return False
+    
+    def _try_chaojiying_fallback(self) -> bool:
+        """尝试使用超级鹰打码平台作为兜底方案"""
+        try:
+            from .chaojiying_util import chaojiying_recognize
+            
+            logger.info(f"【{self.pure_user_id}】尝试使用超级鹰打码平台识别...")
+            
+            # 截图整个页面
+            screenshot_bytes = self.page.screenshot()
+            if not screenshot_bytes:
+                logger.warning(f"【{self.pure_user_id}】截图失败")
+                return False
+            
+            # 使用 9101 类型识别滑块验证码（返回滑动距离）
+            result = chaojiying_recognize(screenshot_bytes, codetype='9101')
+            if not result:
+                logger.warning(f"【{self.pure_user_id}】超级鹰未返回有效结果")
+                return False
+            
+            # 获取滑动距离
+            slide_distance = result.get('distance')
+            if slide_distance:
+                logger.info(f"【{self.pure_user_id}】超级鹰识别成功，滑动距离: {slide_distance}px")
+            elif result.get('x') and result.get('x') > 0:
+                # 如果返回的是坐标，尝试计算距离
+                slide_distance = result.get('x')
+                logger.info(f"【{self.pure_user_id}】超级鹰识别成功，目标x坐标: {slide_distance}px")
+            else:
+                logger.warning(f"【{self.pure_user_id}】超级鹰返回无效: {result}")
+                return False
+            
+            if slide_distance <= 0:
+                logger.warning(f"【{self.pure_user_id}】滑动距离无效: {slide_distance}px")
+                return False
+            
+            # 找到滑块元素
+            slider = self.page.locator('#nc_1_n1z').first
+            if not slider or not slider.is_visible():
+                slider = self.page.locator('.nc_iconfont').first
+            
+            if not slider or not slider.is_visible():
+                logger.warning(f"【{self.pure_user_id}】未找到滑块元素")
+                return False
+            
+            # 获取滑块位置
+            slider_box = slider.bounding_box()
+            if not slider_box:
+                logger.warning(f"【{self.pure_user_id}】无法获取滑块位置")
+                return False
+            
+            logger.info(f"【{self.pure_user_id}】滑块位置: x={slider_box['x']:.1f}, y={slider_box['y']:.1f}, 滑动距离: {slide_distance}px")
+            
+            # 执行滑动
+            slider_center_x = slider_box['x'] + slider_box['width'] / 2
+            slider_center_y = slider_box['y'] + slider_box['height'] / 2
+            self.page.mouse.move(slider_center_x, slider_center_y)
+            self.page.mouse.down()
+            
+            # 分步滑动，模拟人类行为
+            import time
+            steps = 10
+            for i in range(1, steps + 1):
+                x = slider_center_x + (slide_distance * i / steps)
+                self.page.mouse.move(x, slider_center_y)
+                time.sleep(0.05)
+            
+            self.page.mouse.up()
+            
+            # 等待验证结果
+            time.sleep(2)
+            
+            # 检查是否成功
+            page_content = self.page.content()
+            if '验证通过' in page_content or 'SUCCESS' in page_content or 'success' in page_content.lower():
+                logger.info(f"【{self.pure_user_id}】超级鹰打码验证成功！")
+                return True
+            else:
+                logger.warning(f"【{self.pure_user_id}】超级鹰打码后验证未通过")
+                return False
+                
+        except ImportError:
+            logger.warning(f"【{self.pure_user_id}】无法导入超级鹰模块")
+            return False
+        except Exception as e:
+            logger.error(f"【{self.pure_user_id}】超级鹰打码异常: {e}")
+            return False
     
     def close_browser(self):
         """安全关闭浏览器并清理资源"""

@@ -16,12 +16,28 @@ class WebSocketClient:
     async def connect(self):
         """建立WebSocket连接"""
         try:
-            self.websocket = await websockets.connect(
-                self.url,
-                extra_headers=self.headers,
-                ping_interval=None,
-                ping_timeout=None
-            )
+            # 兼容不同版本的websockets库
+            websockets_version = getattr(websockets, '__version__', '0')
+            major_version = 0
+            try:
+                major_version = int(websockets_version.split('.')[0])
+            except:
+                pass
+
+            if major_version >= 14:
+                self.websocket = await websockets.connect(
+                    self.url,
+                    additional_headers=self.headers,
+                    ping_interval=None,
+                    ping_timeout=None
+                )
+            else:
+                self.websocket = await websockets.connect(
+                    self.url,
+                    extra_headers=self.headers,
+                    ping_interval=None,
+                    ping_timeout=None
+                )
             self.is_connected = True
             logger.info("WebSocket连接建立成功")
             return True
