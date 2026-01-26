@@ -3,14 +3,13 @@ import requests
 from loguru import logger
 
 
-def chaojiying_recognize(image_bytes: bytes, codetype: str = '9101') -> dict:
+def chaojiying_recognize(image_bytes: bytes, codetype: str = '9902') -> dict:
     """调用超级鹰打码平台识别滑块位置
     
     codetype 常用类型:
-    - 9101: 滑块验证码，返回滑动距离（单个数字）
-    - 9102: 滑块验证码，返回坐标 x,y
-    - 9004: 坐标点选，返回 x,y
+    - 9902: 滑块验证码（推荐），返回两个图形块中心点坐标 x1,y1|x2,y2，x值相减得到滑动距离
     - 9901: 单图形块，返回中心点坐标 x,y
+    - 9101: 通用定位，返回固定1个坐标（人工识别点击位置）
     """
     try:
         from db_manager import db_manager
@@ -44,9 +43,24 @@ def chaojiying_recognize(image_bytes: bytes, codetype: str = '9101') -> dict:
         if result.get('err_no') == 0:
             pic_str = result.get('pic_str', '')
             
-            # 根据不同的返回格式解析
-            if ',' in pic_str:
-                # 坐标格式: "123,45"
+            # 9902 格式: "x1,y1|x2,y2" - 两个图形块的中心点坐标
+            if '|' in pic_str:
+                parts = pic_str.split('|')
+                coord1 = parts[0].split(',')
+                coord2 = parts[1].split(',')
+                x1, y1 = int(coord1[0]), int(coord1[1])
+                x2, y2 = int(coord2[0]), int(coord2[1])
+                # 滑动距离 = 两个x坐标的差的绝对值
+                distance = abs(x2 - x1)
+                logger.info(f"超级鹰9902解析: 缺口({x1},{y1}), 滑块({x2},{y2}), 滑动距离={distance}px")
+                return {
+                    'x1': x1, 'y1': y1,
+                    'x2': x2, 'y2': y2,
+                    'distance': distance,
+                    'pic_id': result.get('pic_id')
+                }
+            # 单坐标格式: "x,y"
+            elif ',' in pic_str:
                 coords = pic_str.split(',')
                 return {
                     'x': int(coords[0]),
@@ -54,8 +68,8 @@ def chaojiying_recognize(image_bytes: bytes, codetype: str = '9101') -> dict:
                     'distance': None,
                     'pic_id': result.get('pic_id')
                 }
+            # 纯数字格式（滑动距离）
             elif pic_str.isdigit():
-                # 滑动距离格式: "123"
                 return {
                     'x': None,
                     'y': None,
