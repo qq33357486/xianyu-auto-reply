@@ -2714,35 +2714,43 @@ class XianyuSliderStealth:
                 
                 logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance:.0f}px")
                 
-                # 执行滑动
+                # 执行滑动 - 使用更人性化的轨迹
                 self.page.mouse.move(slider_center_x, slider_center_y)
-                time.sleep(random.uniform(0.1, 0.2))
+                time.sleep(random.uniform(0.3, 0.5))  # 增加初始等待，模拟人类准备动作
                 self.page.mouse.down()
                 
-                # 分步滑动，模拟人类行为（使用更自然的轨迹）
-                steps = random.randint(15, 25)
-                for i in range(1, steps + 1):
-                    # 使用缓动函数，开始快中间慢结束快
-                    t = i / steps
-                    # 三次缓动
-                    if t < 0.5:
-                        progress = 4 * t * t * t
-                    else:
-                        progress = 1 - pow(-2 * t + 2, 3) / 2
-                    
-                    # 添加一点随机性
-                    x = slider_center_x + (slide_distance * progress) + random.uniform(-1, 1)
-                    y = slider_center_y + random.uniform(-2, 2)
-                    self.page.mouse.move(x, y)
-                    time.sleep(random.uniform(0.01, 0.04))
+                # 增加步数和总耗时，模拟人类滑动
+                steps = random.randint(35, 50)  # 增加步数
+                total_time = random.uniform(1.5, 2.5)  # 总耗时 1.5-2.5 秒
                 
-                # 最后精确到目标位置
-                self.page.mouse.move(slider_center_x + slide_distance, slider_center_y)
-                time.sleep(random.uniform(0.05, 0.1))
+                for i in range(1, steps + 1):
+                    t = i / steps
+                    
+                    # 使用更自然的缓动曲线（先快后慢，模拟人类微调）
+                    if t < 0.7:
+                        # 前70%时间完成95%距离（快速滑动阶段）
+                        progress = (t / 0.7) * 0.95
+                    else:
+                        # 后30%时间完成5%距离（微调阶段）
+                        progress = 0.95 + ((t - 0.7) / 0.3) * 0.05
+                    
+                    # 添加随机抖动，模拟手抖
+                    x = slider_center_x + (slide_distance * progress) + random.uniform(-2, 2)
+                    y = slider_center_y + random.uniform(-3, 3)  # 增加Y轴抖动
+                    self.page.mouse.move(x, y)
+                    
+                    # 随机延迟，模拟人类不均匀的滑动速度
+                    step_delay = (total_time / steps) * random.uniform(0.5, 1.5)
+                    time.sleep(step_delay)
+                
+                # 最后微调到目标位置（添加小随机偏移，不要太精确）
+                final_x = slider_center_x + slide_distance + random.uniform(-3, 3)
+                self.page.mouse.move(final_x, slider_center_y + random.uniform(-1, 1))
+                time.sleep(random.uniform(0.1, 0.2))
                 self.page.mouse.up()
                 
-                # 等待验证结果（增加等待时间）
-                time.sleep(3)
+                # 等待验证结果
+                time.sleep(random.uniform(2, 3))
                 
                 # 检查是否成功 - 多种判断方式
                 success = False
