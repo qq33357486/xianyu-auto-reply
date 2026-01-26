@@ -248,15 +248,22 @@ class PlaywrightSingleton:
     _playwright = None
     _lock = threading.Lock()
     _ref_count = 0
+    _is_closed = False
     
     @classmethod
     def get_instance(cls):
         """获取 Playwright 实例（线程安全）"""
         with cls._lock:
-            if cls._playwright is None:
+            # 如果之前被关闭了，需要重新初始化
+            if cls._playwright is None or cls._is_closed:
                 logger.info("初始化 Playwright 单例...")
-                cls._playwright = sync_playwright().start()
-                logger.info("Playwright 单例初始化成功")
+                try:
+                    cls._playwright = sync_playwright().start()
+                    cls._is_closed = False
+                    logger.info("Playwright 单例初始化成功")
+                except Exception as e:
+                    logger.error(f"Playwright 单例初始化失败: {e}")
+                    raise
             cls._ref_count += 1
             return cls._playwright
     
@@ -271,13 +278,22 @@ class PlaywrightSingleton:
     def force_close(cls):
         """强制关闭 Playwright（仅在程序退出时调用）"""
         with cls._lock:
-            if cls._playwright is not None:
+            if cls._playwright is not None and not cls._is_closed:
                 try:
                     cls._playwright.stop()
                 except:
                     pass
                 cls._playwright = None
                 cls._ref_count = 0
+                cls._is_closed = True
+    
+    @classmethod
+    def mark_closed(cls):
+        """标记 Playwright 已关闭（当检测到 event loop closed 错误时调用）"""
+        with cls._lock:
+            cls._playwright = None
+            cls._ref_count = 0
+            cls._is_closed = True
 
 
 def _should_force_headless() -> bool:
@@ -519,12 +535,13 @@ class XianyuSliderStealth:
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】清理浏览器时出错: {e}")
         
+        # 【重要】不要关闭 Playwright 单例，只释放引用
         try:
             if hasattr(self, 'playwright') and self.playwright:
-                self.playwright.stop()
+                PlaywrightSingleton.release()
                 self.playwright = None
         except Exception as e:
-            logger.warning(f"【{self.pure_user_id}】清理Playwright时出错: {e}")
+            logger.warning(f"【{self.pure_user_id}】释放Playwright引用时出错: {e}")
     
     def _load_success_history(self) -> List[Dict[str, Any]]:
         """加载历史成功数据"""
@@ -694,44 +711,65 @@ class XianyuSliderStealth:
             page_title = self.page.title()
             logger.info(f"【{self.pure_user_id}】当前页面标题: {page_title}")
             
-            # 等待一下确保cookie完全更新
-            time.sleep(1)
+            # 如果页面仍然是验证码页面，尝试等待跳转
+            if 'punish' in current_url or '验证码' in page_title:
+                logger.warning(f"【{self.pure_user_id}】页面仍在验证码页面，等待跳转...")
+                try:
+                    # 等待页面跳转
+                    self.page.wait_for_url(lambda url: 'punish' not in url, timeout=5000)
+                    current_url = self.page.url
+                    logger.info(f"【{self.pure_user_id}】页面已跳转到: {current_url}")
+                except:
+                    logger.warning(f"【{self.pure_user_id}】等待页面跳转超时")
             
-            # 获取浏览器中的所有cookie
-            cookies = self.context.cookies()
-            
-            if cookies:
-                # 将cookie转换为字典格式
-                new_cookies = {}
-                for cookie in cookies:
-                    new_cookies[cookie['name']] = cookie['value']
+            # 多次尝试获取cookie（有时cookie需要一点时间才能设置）
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                # 等待一下确保cookie完全更新
+                time.sleep(1)
                 
-                logger.info(f"【{self.pure_user_id}】滑块验证成功后已获取cookie，共{len(new_cookies)}个cookie")
+                # 获取浏览器中的所有cookie
+                cookies = self.context.cookies()
                 
-                # 记录所有cookie的详细信息
-                logger.info(f"【{self.pure_user_id}】获取到的所有cookie: {list(new_cookies.keys())}")
-                
-                # 只提取x5sec相关的cookie
-                filtered_cookies = {}
-                
-                # 筛选出x5相关的cookies（包括x5sec, x5step等）
-                for cookie_name, cookie_value in new_cookies.items():
-                    cookie_name_lower = cookie_name.lower()
-                    if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
-                        filtered_cookies[cookie_name] = cookie_value
-                        logger.info(f"【{self.pure_user_id}】x5相关cookie已获取: {cookie_name} = {cookie_value}")
-                
-                logger.info(f"【{self.pure_user_id}】找到{len(filtered_cookies)}个x5相关cookies: {list(filtered_cookies.keys())}")
-                
-                if filtered_cookies:
-                    logger.info(f"【{self.pure_user_id}】返回过滤后的x5相关cookie: {list(filtered_cookies.keys())}")
-                    return filtered_cookies
+                if cookies:
+                    # 将cookie转换为字典格式
+                    new_cookies = {}
+                    for cookie in cookies:
+                        new_cookies[cookie['name']] = cookie['value']
+                    
+                    logger.info(f"【{self.pure_user_id}】第{attempt}次尝试获取cookie，共{len(new_cookies)}个cookie")
+                    
+                    # 记录所有cookie的详细信息
+                    logger.info(f"【{self.pure_user_id}】获取到的所有cookie: {list(new_cookies.keys())}")
+                    
+                    # 只提取x5sec相关的cookie
+                    filtered_cookies = {}
+                    
+                    # 筛选出x5相关的cookies（包括x5sec, x5step等）
+                    for cookie_name, cookie_value in new_cookies.items():
+                        cookie_name_lower = cookie_name.lower()
+                        if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
+                            filtered_cookies[cookie_name] = cookie_value
+                            logger.info(f"【{self.pure_user_id}】x5相关cookie已获取: {cookie_name} = {cookie_value}")
+                    
+                    logger.info(f"【{self.pure_user_id}】找到{len(filtered_cookies)}个x5相关cookies: {list(filtered_cookies.keys())}")
+                    
+                    if filtered_cookies:
+                        logger.info(f"【{self.pure_user_id}】返回过滤后的x5相关cookie: {list(filtered_cookies.keys())}")
+                        return filtered_cookies
+                    elif attempt < max_attempts:
+                        logger.warning(f"【{self.pure_user_id}】第{attempt}次未找到x5相关cookie，继续尝试...")
+                        continue
+                    else:
+                        logger.warning(f"【{self.pure_user_id}】未找到x5相关cookie")
+                        return None
                 else:
-                    logger.warning(f"【{self.pure_user_id}】未找到x5相关cookie")
+                    logger.warning(f"【{self.pure_user_id}】第{attempt}次未获取到任何cookie")
+                    if attempt < max_attempts:
+                        continue
                     return None
-            else:
-                logger.warning(f"【{self.pure_user_id}】未获取到任何cookie")
-                return None
+            
+            return None
                 
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】获取滑块验证成功后的cookie失败: {str(e)}")
@@ -2572,13 +2610,23 @@ class XianyuSliderStealth:
             logger.warning(f"【{self.pure_user_id}】[超级鹰] 无法导入模块")
             return False
         
+        # 记录初始URL用于判断是否跳转
+        initial_url = self.page.url
+        logger.info(f"【{self.pure_user_id}】[超级鹰] 初始URL: {initial_url}")
+        
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info(f"【{self.pure_user_id}】[超级鹰] 开始识别 (第{attempt}/{max_retries}次)")
                 
                 # 如果不是第一次尝试，等待一下让页面刷新
                 if attempt > 1:
-                    time.sleep(random.uniform(1.0, 2.0))
+                    time.sleep(random.uniform(1.5, 2.5))
+                    # 刷新页面重新加载验证码
+                    try:
+                        self.page.reload(wait_until="domcontentloaded", timeout=10000)
+                        time.sleep(1)
+                    except:
+                        pass
                 
                 # 截图整个页面
                 screenshot_bytes = self.page.screenshot()
@@ -2586,7 +2634,7 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 截图失败")
                     continue
                 
-                # 使用 9101 类型识别滑块验证码（返回滑动距离）
+                # 使用 9101 类型识别滑块验证码（返回目标点坐标）
                 result = chaojiying_recognize(screenshot_bytes, codetype='9101')
                 if not result:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 未返回有效结果")
@@ -2644,20 +2692,24 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 无法获取滑块位置")
                     continue
                 
+                # 滑块按钮的左边缘和中心位置
+                slider_left_x = slider_box['x']
                 slider_center_x = slider_box['x'] + slider_box['width'] / 2
                 slider_center_y = slider_box['y'] + slider_box['height'] / 2
                 
                 # 计算滑动距离
                 slide_distance = None
-                if result.get('distance'):
+                if result.get('distance') and result.get('distance') > 0:
                     # 直接返回滑动距离
                     slide_distance = result.get('distance')
                     logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 滑动距离={slide_distance}px")
                 elif result.get('x') and result.get('x') > 0:
-                    # 返回的是目标点坐标，需要计算滑动距离 = 目标x - 滑块当前x
+                    # 返回的是目标点在截图中的绝对坐标
+                    # 滑动距离 = 目标x - 滑块按钮左边缘x（因为滑块从左边缘开始滑动）
                     target_x = result.get('x')
-                    slide_distance = target_x - slider_center_x
-                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 目标x={target_x}, 滑块x={slider_center_x:.0f}, 计算距离={slide_distance:.0f}px")
+                    # 修正：使用滑块左边缘计算，并减去滑块宽度的一半（因为要对准缺口中心）
+                    slide_distance = target_x - slider_left_x - slider_box['width'] / 2
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 目标x={target_x}, 滑块左边缘={slider_left_x:.0f}, 滑块宽度={slider_box['width']:.0f}, 计算距离={slide_distance:.0f}px")
                 else:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 返回格式无效: {result}")
                     continue
@@ -2666,46 +2718,80 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
                     continue
                 
-                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance:.0f}px")
+                # 限制滑动距离在合理范围内（通常不超过400px）
+                if slide_distance > 400:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离过大({slide_distance:.0f}px)，限制为350px")
+                    slide_distance = 350
+                
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 最终滑动距离: {slide_distance:.0f}px")
                 
                 # 执行滑动
                 self.page.mouse.move(slider_center_x, slider_center_y)
                 time.sleep(random.uniform(0.1, 0.2))
                 self.page.mouse.down()
                 
-                # 分步滑动，模拟人类行为
-                steps = random.randint(8, 12)
+                # 分步滑动，模拟人类行为（使用更自然的轨迹）
+                steps = random.randint(15, 25)
                 for i in range(1, steps + 1):
-                    progress = i / steps
+                    # 使用缓动函数，开始快中间慢结束快
+                    t = i / steps
+                    # 三次缓动
+                    if t < 0.5:
+                        progress = 4 * t * t * t
+                    else:
+                        progress = 1 - pow(-2 * t + 2, 3) / 2
+                    
                     # 添加一点随机性
-                    x = slider_center_x + (slide_distance * progress) + random.uniform(-2, 2)
-                    y = slider_center_y + random.uniform(-1, 1)
+                    x = slider_center_x + (slide_distance * progress) + random.uniform(-1, 1)
+                    y = slider_center_y + random.uniform(-2, 2)
                     self.page.mouse.move(x, y)
-                    time.sleep(random.uniform(0.02, 0.06))
+                    time.sleep(random.uniform(0.01, 0.04))
                 
                 # 最后精确到目标位置
                 self.page.mouse.move(slider_center_x + slide_distance, slider_center_y)
                 time.sleep(random.uniform(0.05, 0.1))
                 self.page.mouse.up()
                 
-                # 等待验证结果
-                time.sleep(2)
+                # 等待验证结果（增加等待时间）
+                time.sleep(3)
                 
-                # 检查是否成功
-                page_content = self.page.content()
-                if '验证通过' in page_content or 'SUCCESS' in page_content or 'success' in page_content.lower():
+                # 检查是否成功 - 多种判断方式
+                success = False
+                
+                # 方式1：检查页面是否跳转
+                current_url = self.page.url
+                if current_url != initial_url and 'punish' not in current_url:
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 页面已跳转: {current_url}")
+                    success = True
+                
+                # 方式2：检查页面内容
+                if not success:
+                    page_content = self.page.content()
+                    if '验证通过' in page_content or 'SUCCESS' in page_content:
+                        logger.info(f"【{self.pure_user_id}】[超级鹰] 检测到验证通过标志")
+                        success = True
+                    elif '验证码' not in page_content and '滑块' not in page_content:
+                        # 验证码相关内容消失，可能成功
+                        logger.info(f"【{self.pure_user_id}】[超级鹰] 验证码内容已消失")
+                        success = True
+                
+                # 方式3：检查是否获取到x5sec cookie
+                if not success:
+                    try:
+                        cookies = self.context.cookies()
+                        for cookie in cookies:
+                            if cookie['name'].lower().startswith('x5'):
+                                logger.info(f"【{self.pure_user_id}】[超级鹰] 检测到x5 cookie: {cookie['name']}")
+                                success = True
+                                break
+                    except:
+                        pass
+                
+                if success:
                     logger.info(f"【{self.pure_user_id}】[超级鹰] 验证成功! (第{attempt}次)")
                     return True
                 
-                # 检查滑块是否消失（也可能是成功的标志）
-                try:
-                    if not slider.is_visible():
-                        logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块已消失，验证可能成功 (第{attempt}次)")
-                        return True
-                except:
-                    pass
-                
-                logger.warning(f"【{self.pure_user_id}】[超级鹰] 第{attempt}次验证未通过")
+                logger.warning(f"【{self.pure_user_id}】[超级鹰] 第{attempt}次验证未通过，当前URL: {current_url}")
                     
             except Exception as e:
                 logger.error(f"【{self.pure_user_id}】[超级鹰] 第{attempt}次异常: {e}")
@@ -2736,23 +2822,25 @@ class XianyuSliderStealth:
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】关闭上下文时出错: {e}")
         
-        # 【修复】同步关闭浏览器，确保资源真正释放
+        # 关闭浏览器实例（但不关闭 Playwright 单例）
         try:
             if hasattr(self, 'browser') and self.browser:
-                self.browser.close()  # 直接同步关闭，不使用异步任务
+                self.browser.close()
                 logger.info(f"【{self.pure_user_id}】浏览器已关闭")
                 self.browser = None
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
         
-        # 【修复】同步停止Playwright，确保资源真正释放
+        # 【重要】不要关闭 Playwright 单例，只释放引用
+        # 单例会在程序退出时自动清理
         try:
             if hasattr(self, 'playwright') and self.playwright:
-                self.playwright.stop()  # 直接同步停止，不使用异步任务
-                logger.info(f"【{self.pure_user_id}】Playwright已停止")
+                # 只释放引用，不调用 stop()
+                PlaywrightSingleton.release()
+                logger.info(f"【{self.pure_user_id}】Playwright引用已释放")
                 self.playwright = None
         except Exception as e:
-            logger.warning(f"【{self.pure_user_id}】停止Playwright时出错: {e}")
+            logger.warning(f"【{self.pure_user_id}】释放Playwright引用时出错: {e}")
         
         # 清理临时目录
         try:
