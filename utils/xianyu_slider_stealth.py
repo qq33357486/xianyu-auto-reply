@@ -2719,14 +2719,12 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
                     continue
                 
-                # 限制滑动距离在合理范围内
-                # 注意：超级鹰返回的是整个截图的绝对坐标，滑动距离可能较大
-                # 但如果超过600px，很可能是识别错误
-                if slide_distance > 600:
-                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离过大({slide_distance:.0f}px)，可能识别错误，限制为400px")
-                    slide_distance = 400
+                # 超级鹰9101是人工识别，返回的坐标可信度高
+                # 不再限制滑动距离，完全信任识别结果
+                # 参考文档: https://www.chaojiying.com/api-52.html
+                # 坐标格式: x,y (图像左上角为原点0,0)
                 
-                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 最终滑动距离: {slide_distance:.0f}px")
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance:.0f}px")
                 
                 # 执行滑动
                 self.page.mouse.move(slider_center_x, slider_center_y)
