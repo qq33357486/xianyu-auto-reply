@@ -19,6 +19,15 @@ from typing import Optional, Tuple, List, Dict, Any, Callable
 from loguru import logger
 from collections import defaultdict
 
+# 导入 undetected-playwright 反检测模块
+try:
+    from undetected_playwright import Tarnished
+    UNDETECTED_PLAYWRIGHT_AVAILABLE = True
+    logger.info("undetected-playwright 模块加载成功")
+except ImportError:
+    UNDETECTED_PLAYWRIGHT_AVAILABLE = False
+    logger.warning("undetected-playwright 模块未安装，将使用普通模式")
+
 # 导入配置
 try:
     from config import SLIDER_VERIFICATION
@@ -375,10 +384,9 @@ class XianyuSliderStealth:
         return True
         
     def init_browser(self):
-        """初始化浏览器 - 增强反检测版本"""
+        """初始化浏览器 - 增强反检测版本（集成 undetected-playwright）"""
         try:
             # 每次创建新的 Playwright 实例（因为 sync_playwright 不能跨线程使用）
-            # 注意：不能使用单例模式，因为 Playwright sync API 使用 greenlet，不能跨线程
             logger.info(f"【{self.pure_user_id}】创建Playwright实例...")
             self.playwright = sync_playwright().start()
             logger.info(f"【{self.pure_user_id}】Playwright创建成功")
@@ -400,7 +408,7 @@ class XianyuSliderStealth:
                     "--disable-gpu",
                     "--disable-web-security",
                     "--disable-features=VizDisplayCompositor",
-                    "--start-maximized",  # 窗口最大化
+                    "--start-maximized",
                     f"--window-size={browser_features['window_size']}",
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
@@ -459,21 +467,15 @@ class XianyuSliderStealth:
                 'user_agent': browser_features['user_agent'],
                 'locale': browser_features['locale'],
                 'timezone_id': browser_features['timezone_id'],
-                # 🔑 添加真实的权限设置
                 'permissions': ['geolocation', 'notifications'],
-                # 🔑 添加真实的色彩方案
                 'color_scheme': random.choice(['light', 'dark', 'no-preference']),
-                # 🔑 添加HTTP凭据
                 'http_credentials': None,
-                # 🔑 忽略HTTPS错误（某些情况下更真实）
                 'ignore_https_errors': False,
             }
             
             # 根据模式配置viewport和no_viewport
             if not self.headless:
-                # 有头模式：使用 no_viewport=True 支持窗口最大化
-                # 注意：使用no_viewport时，不能设置device_scale_factor、is_mobile、has_touch
-                context_options['no_viewport'] = True  # 移除viewport限制，支持--start-maximized
+                context_options['no_viewport'] = True
                 self.context = self.browser.new_context(**context_options)
             else:
                 # 无头模式：使用固定viewport
@@ -490,6 +492,14 @@ class XianyuSliderStealth:
                 raise Exception("浏览器上下文创建失败")
             logger.info(f"【{self.pure_user_id}】浏览器上下文创建成功")
             
+            # 🔑 关键：应用 undetected-playwright 反检测
+            if UNDETECTED_PLAYWRIGHT_AVAILABLE:
+                try:
+                    Tarnished.apply_stealth(self.context)
+                    logger.info(f"【{self.pure_user_id}】✅ undetected-playwright 反检测已注入")
+                except Exception as e:
+                    logger.warning(f"【{self.pure_user_id}】undetected-playwright 注入失败: {e}，使用普通模式")
+            
             # 创建新页面
             logger.info(f"【{self.pure_user_id}】创建新页面...")
             self.page = self.context.new_page()
@@ -499,7 +509,7 @@ class XianyuSliderStealth:
                 raise Exception("页面创建失败")
             logger.info(f"【{self.pure_user_id}】页面创建成功（{'最大化窗口模式' if not self.headless else '无头模式'}）")
             
-            # 添加增强反检测脚本
+            # 添加增强反检测脚本（作为补充）
             logger.info(f"【{self.pure_user_id}】添加反检测脚本...")
             self.page.add_init_script(self._get_stealth_script(browser_features))
             logger.info(f"【{self.pure_user_id}】浏览器初始化完成")
