@@ -377,10 +377,11 @@ class XianyuSliderStealth:
     def init_browser(self):
         """初始化浏览器 - 增强反检测版本"""
         try:
-            # 使用 Playwright 单例（解决多次调用 sync_playwright().start() 的问题）
-            logger.info(f"【{self.pure_user_id}】获取Playwright单例...")
-            self.playwright = PlaywrightSingleton.get_instance()
-            logger.info(f"【{self.pure_user_id}】Playwright获取成功")
+            # 每次创建新的 Playwright 实例（因为 sync_playwright 不能跨线程使用）
+            # 注意：不能使用单例模式，因为 Playwright sync API 使用 greenlet，不能跨线程
+            logger.info(f"【{self.pure_user_id}】创建Playwright实例...")
+            self.playwright = sync_playwright().start()
+            logger.info(f"【{self.pure_user_id}】Playwright创建成功")
             
             # 随机选择浏览器特征
             browser_features = self._get_random_browser_features()
@@ -535,13 +536,13 @@ class XianyuSliderStealth:
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】清理浏览器时出错: {e}")
         
-        # 【重要】不要关闭 Playwright 单例，只释放引用
+        # 关闭 Playwright 实例
         try:
             if hasattr(self, 'playwright') and self.playwright:
-                PlaywrightSingleton.release()
+                self.playwright.stop()
                 self.playwright = None
         except Exception as e:
-            logger.warning(f"【{self.pure_user_id}】释放Playwright引用时出错: {e}")
+            logger.warning(f"【{self.pure_user_id}】清理Playwright时出错: {e}")
     
     def _load_success_history(self) -> List[Dict[str, Any]]:
         """加载历史成功数据"""
@@ -2718,10 +2719,12 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
                     continue
                 
-                # 限制滑动距离在合理范围内（通常不超过400px）
-                if slide_distance > 400:
-                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离过大({slide_distance:.0f}px)，限制为350px")
-                    slide_distance = 350
+                # 限制滑动距离在合理范围内
+                # 注意：超级鹰返回的是整个截图的绝对坐标，滑动距离可能较大
+                # 但如果超过600px，很可能是识别错误
+                if slide_distance > 600:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离过大({slide_distance:.0f}px)，可能识别错误，限制为400px")
+                    slide_distance = 400
                 
                 logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 最终滑动距离: {slide_distance:.0f}px")
                 
@@ -2831,16 +2834,14 @@ class XianyuSliderStealth:
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
         
-        # 【重要】不要关闭 Playwright 单例，只释放引用
-        # 单例会在程序退出时自动清理
+        # 关闭 Playwright 实例
         try:
             if hasattr(self, 'playwright') and self.playwright:
-                # 只释放引用，不调用 stop()
-                PlaywrightSingleton.release()
-                logger.info(f"【{self.pure_user_id}】Playwright引用已释放")
+                self.playwright.stop()
+                logger.info(f"【{self.pure_user_id}】Playwright已停止")
                 self.playwright = None
         except Exception as e:
-            logger.warning(f"【{self.pure_user_id}】释放Playwright引用时出错: {e}")
+            logger.warning(f"【{self.pure_user_id}】停止Playwright时出错: {e}")
         
         # 清理临时目录
         try:

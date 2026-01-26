@@ -113,14 +113,9 @@ class FileLogCollector:
             if match:
                 timestamp_str, level, source, function, line_num, message = match.groups()
                 
-                # 转换时间格式
-                try:
-                    timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
-                except:
-                    timestamp = datetime.now()
-                
+                # 转换时间格式（保持本地时间格式，不使用isoformat避免时区混淆）
                 log_entry = {
-                    "timestamp": timestamp.isoformat(),
+                    "timestamp": timestamp_str,  # 直接使用原始时间字符串
                     "level": level,
                     "source": source,
                     "function": function,
@@ -134,7 +129,7 @@ class FileLogCollector:
         except Exception as e:
             # 如果解析失败，作为普通消息处理
             log_entry = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],  # 本地时间格式
                 "level": "INFO",
                 "source": "system",
                 "function": "unknown",
