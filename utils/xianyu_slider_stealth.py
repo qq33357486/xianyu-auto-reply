@@ -2716,27 +2716,29 @@ class XianyuSliderStealth:
                 
                 # 执行滑动 - 使用更人性化的轨迹
                 self.page.mouse.move(slider_center_x, slider_center_y)
-                time.sleep(random.uniform(0.3, 0.5))  # 增加初始等待，模拟人类准备动作
+                initial_wait = random.uniform(0.3, 0.5)
+                time.sleep(initial_wait)
                 self.page.mouse.down()
                 
                 # 增加步数和总耗时，模拟人类滑动
-                steps = random.randint(35, 50)  # 增加步数
-                total_time = random.uniform(1.5, 2.5)  # 总耗时 1.5-2.5 秒
+                steps = random.randint(35, 50)
+                total_time = random.uniform(1.5, 2.5)
+                
+                # 记录滑动开始时间
+                slide_start_time = time.time()
                 
                 for i in range(1, steps + 1):
                     t = i / steps
                     
                     # 使用更自然的缓动曲线（先快后慢，模拟人类微调）
                     if t < 0.7:
-                        # 前70%时间完成95%距离（快速滑动阶段）
                         progress = (t / 0.7) * 0.95
                     else:
-                        # 后30%时间完成5%距离（微调阶段）
                         progress = 0.95 + ((t - 0.7) / 0.3) * 0.05
                     
                     # 添加随机抖动，模拟手抖
                     x = slider_center_x + (slide_distance * progress) + random.uniform(-2, 2)
-                    y = slider_center_y + random.uniform(-3, 3)  # 增加Y轴抖动
+                    y = slider_center_y + random.uniform(-3, 3)
                     self.page.mouse.move(x, y)
                     
                     # 随机延迟，模拟人类不均匀的滑动速度
@@ -2744,10 +2746,15 @@ class XianyuSliderStealth:
                     time.sleep(step_delay)
                 
                 # 最后微调到目标位置（添加小随机偏移，不要太精确）
-                final_x = slider_center_x + slide_distance + random.uniform(-3, 3)
+                final_offset = random.uniform(-3, 3)
+                final_x = slider_center_x + slide_distance + final_offset
                 self.page.mouse.move(final_x, slider_center_y + random.uniform(-1, 1))
                 time.sleep(random.uniform(0.1, 0.2))
                 self.page.mouse.up()
+                
+                # 记录滑动结束时间和关键参数
+                slide_duration = time.time() - slide_start_time
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑动完成: {steps}步, 耗时{slide_duration:.2f}秒, 目标距离{slide_distance:.0f}px, 最终偏移{final_offset:+.1f}px")
                 
                 # 等待验证结果
                 time.sleep(random.uniform(2, 3))
