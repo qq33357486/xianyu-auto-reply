@@ -2464,7 +2464,7 @@ class XianyuSliderStealth:
         return False
 
     def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
-        """处理滑块验证（智能模式：简单滑块用机械滑动，图片滑块用打码平台）
+        """处理滑块验证（统一使用超级鹰打码平台）
         
         Args:
             max_retries: 最大重试次数（默认3次）
@@ -2476,22 +2476,10 @@ class XianyuSliderStealth:
         slider_type = self._detect_slider_type()
         logger.info(f"【{self.pure_user_id}】检测到滑块类型: {slider_type}")
         
-        # ========== 第二步：根据类型选择处理方式 ==========
-        if slider_type == "simple":
-            # 简单滑块（拖到最右边）- 使用机械滑动
-            logger.info(f"【{self.pure_user_id}】简单滑块，使用机械滑动处理...")
-            return self._solve_simple_slider(max_retries=max_retries, fast_mode=fast_mode)
-        elif slider_type == "image":
-            # 图片滑块（需要识别缺口）- 使用超级鹰打码平台
-            logger.info(f"【{self.pure_user_id}】图片滑块，使用超级鹰打码平台处理...")
-            return self._try_chaojiying_fallback(max_retries=max_retries)
-        else:
-            # 未知类型，先尝试机械滑动，失败后用打码平台
-            logger.warning(f"【{self.pure_user_id}】未知滑块类型，先尝试机械滑动...")
-            if self._solve_simple_slider(max_retries=2, fast_mode=fast_mode):
-                return True
-            logger.info(f"【{self.pure_user_id}】机械滑动失败，尝试超级鹰打码平台...")
-            return self._try_chaojiying_fallback(max_retries=max_retries)
+        # ========== 第二步：统一使用超级鹰处理所有类型滑块 ==========
+        # 简单滑块和图片滑块都使用超级鹰，提高成功率
+        logger.info(f"【{self.pure_user_id}】使用超级鹰打码平台处理滑块验证...")
+        return self._try_chaojiying_fallback(max_retries=max_retries)
         
         # ========== 以下为原机械滑动代码（已注释） ==========
         # failure_records = []
