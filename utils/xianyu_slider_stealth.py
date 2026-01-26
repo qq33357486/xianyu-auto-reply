@@ -2474,128 +2474,97 @@ class XianyuSliderStealth:
         return False
 
     def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
-        """处理滑块验证（统一使用超级鹰打码平台）
+        """处理滑块验证（纯机械滑动模式）
         
         Args:
             max_retries: 最大重试次数（默认3次）
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
         """
-        logger.info(f"【{self.pure_user_id}】开始处理滑块验证...")
+        failure_records = []
+        current_strategy = 'ultra_fast'  # 极速策略
         
-        # ========== 第一步：检测滑块类型 ==========
-        slider_type = self._detect_slider_type()
-        logger.info(f"【{self.pure_user_id}】检测到滑块类型: {slider_type}")
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"【{self.pure_user_id}】开始处理滑块验证... (第{attempt}/{max_retries}次尝试)")
+                
+                # 如果不是第一次尝试，短暂等待后重试
+                if attempt > 1:
+                    retry_delay = random.uniform(0.5, 1.0)
+                    logger.info(f"【{self.pure_user_id}】等待{retry_delay:.2f}秒后重试...")
+                    time.sleep(retry_delay)
+                    
+                    # 保留frame引用，让重试时可以直接使用原来的frame查找滑块
+                    if hasattr(self, '_detected_slider_frame'):
+                        frame_info = "主页面" if self._detected_slider_frame is None else "Frame"
+                        logger.info(f"【{self.pure_user_id}】保留frame引用，将在原来的{frame_info}中重试")
+                    else:
+                        logger.info(f"【{self.pure_user_id}】未找到frame引用，将重新检测滑块位置")
+                
+                # 1. 查找滑块元素（使用快速模式）
+                slider_container, slider_button, slider_track = self.find_slider_elements(fast_mode=fast_mode)
+                if not all([slider_container, slider_button, slider_track]):
+                    logger.error(f"【{self.pure_user_id}】滑块元素查找失败")
+                    continue
+                
+                # 2. 计算滑动距离
+                slide_distance = self.calculate_slide_distance(slider_button, slider_track)
+                if slide_distance <= 0:
+                    logger.error(f"【{self.pure_user_id}】滑动距离计算失败")
+                    continue
+                
+                # 3. 生成人类化轨迹
+                trajectory = self.generate_human_trajectory(slide_distance)
+                if not trajectory:
+                    logger.error(f"【{self.pure_user_id}】轨迹生成失败")
+                    continue
+            
+                # 4. 模拟滑动
+                if not self.simulate_slide(slider_button, trajectory):
+                    logger.error(f"【{self.pure_user_id}】滑动模拟失败")
+                    continue
+                
+                # 5. 检查验证结果（极速模式）
+                if self.check_verification_success_fast(slider_button):
+                    logger.info(f"【{self.pure_user_id}】✅ 滑块验证成功! (第{attempt}次尝试)")
+                    
+                    # 记录策略成功
+                    strategy_stats.record_attempt(attempt, current_strategy, success=True)
+                    
+                    # 保存成功记录用于学习
+                    if self.enable_learning and hasattr(self, 'current_trajectory_data'):
+                        self._save_success_record(self.current_trajectory_data)
+                    
+                    return True
+                else:
+                    logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次验证失败")
+                    
+                    # 记录策略失败
+                    strategy_stats.record_attempt(attempt, current_strategy, success=False)
+                    
+                    # 分析失败原因
+                    if hasattr(self, 'current_trajectory_data'):
+                        failure_info = self._analyze_failure(attempt, slide_distance, self.current_trajectory_data)
+                        failure_records.append(failure_info)
+                    
+                    if attempt < max_retries:
+                        continue
+                
+            except Exception as e:
+                logger.error(f"【{self.pure_user_id}】第{attempt}次处理滑块验证时出错: {str(e)}")
+                if attempt < max_retries:
+                    continue
         
-        # ========== 第二步：统一使用超级鹰处理所有类型滑块 ==========
-        # 简单滑块和图片滑块都使用超级鹰，提高成功率
-        logger.info(f"【{self.pure_user_id}】使用超级鹰打码平台处理滑块验证...")
-        return self._try_chaojiying_fallback(max_retries=max_retries)
+        # 所有尝试都失败了
+        logger.error(f"【{self.pure_user_id}】滑块验证失败，已尝试{max_retries}次")
         
-        # ========== 以下为原机械滑动代码（已注释） ==========
-        # failure_records = []
-        # current_strategy = 'ultra_fast'  # 极速策略
-        # 
-        # for attempt in range(1, max_retries + 1):
-        #     try:
-        #         logger.info(f"【{self.pure_user_id}】开始处理滑块验证... (第{attempt}/{max_retries}次尝试)")
-        #         
-        #         # 如果不是第一次尝试，短暂等待后重试
-        #         if attempt > 1:
-        #             retry_delay = random.uniform(0.5, 1.0)  # 减少等待时间
-        #             logger.info(f"【{self.pure_user_id}】等待{retry_delay:.2f}秒后重试...")
-        #             time.sleep(retry_delay)
-        #             
-        #             # 不刷新页面，直接在原来的frame中重试
-        #             # 保留frame引用，让重试时可以直接使用原来的frame查找滑块
-        #             if hasattr(self, '_detected_slider_frame'):
-        #                 frame_info = "主页面" if self._detected_slider_frame is None else "Frame"
-        #                 logger.info(f"【{self.pure_user_id}】保留frame引用，将在原来的{frame_info}中重试")
-        #             else:
-        #                 logger.info(f"【{self.pure_user_id}】未找到frame引用，将重新检测滑块位置")
-        #         
-        #         # 1. 查找滑块元素（使用快速模式）
-        #         slider_container, slider_button, slider_track = self.find_slider_elements(fast_mode=fast_mode)
-        #         if not all([slider_container, slider_button, slider_track]):
-        #             logger.error(f"【{self.pure_user_id}】滑块元素查找失败")
-        #             continue
-        #         
-        #         # 2. 计算滑动距离
-        #         slide_distance = self.calculate_slide_distance(slider_button, slider_track)
-        #         if slide_distance <= 0:
-        #             logger.error(f"【{self.pure_user_id}】滑动距离计算失败")
-        #             continue
-        #         
-        #         # 3. 生成人类化轨迹
-        #         trajectory = self.generate_human_trajectory(slide_distance)
-        #         if not trajectory:
-        #             logger.error(f"【{self.pure_user_id}】轨迹生成失败")
-        #             continue
-        #     
-        #         # 4. 模拟滑动
-        #         if not self.simulate_slide(slider_button, trajectory):
-        #             logger.error(f"【{self.pure_user_id}】滑动模拟失败")
-        #             continue
-        #         
-        #         # 5. 检查验证结果（极速模式）
-        #         if self.check_verification_success_fast(slider_button):
-        #             logger.info(f"【{self.pure_user_id}】✅ 滑块验证成功! (第{attempt}次尝试)")
-        #             
-        #             # 📊 记录策略成功
-        #             strategy_stats.record_attempt(attempt, current_strategy, success=True)
-        #             logger.info(f"【{self.pure_user_id}】📊 记录策略: 第{attempt}次-{current_strategy}策略-成功")
-        #             
-        #             # 保存成功记录用于学习
-        #             if self.enable_learning and hasattr(self, 'current_trajectory_data'):
-        #                 self._save_success_record(self.current_trajectory_data)
-        #                 logger.info(f"【{self.pure_user_id}】已保存成功记录用于参数优化")
-        #             
-        #             # 如果不是第一次就成功，记录重试信息
-        #             if attempt > 1:
-        #                 logger.info(f"【{self.pure_user_id}】经过{attempt}次尝试后验证成功")
-        #             
-        #             # 输出当前统计摘要
-        #             strategy_stats.log_summary()
-        #             
-        #             return True
-        #         else:
-        #             logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次验证失败")
-        #             
-        #             # 📊 记录策略失败
-        #             strategy_stats.record_attempt(attempt, current_strategy, success=False)
-        #             logger.info(f"【{self.pure_user_id}】📊 记录策略: 第{attempt}次-{current_strategy}策略-失败")
-        #             
-        #             # 分析失败原因
-        #             if hasattr(self, 'current_trajectory_data'):
-        #                 failure_info = self._analyze_failure(attempt, slide_distance, self.current_trajectory_data)
-        #                 failure_records.append(failure_info)
-        #             
-        #             # 如果不是最后一次尝试，继续
-        #             if attempt < max_retries:
-        #                 continue
-        #         
-        #     except Exception as e:
-        #         logger.error(f"【{self.pure_user_id}】第{attempt}次处理滑块验证时出错: {str(e)}")
-        #         if attempt < max_retries:
-        #             continue
-        # 
-        # # 所有尝试都失败了
-        # logger.error(f"【{self.pure_user_id}】滑块验证失败，已尝试{max_retries}次")
-        # 
-        # # 输出失败分析摘要
-        # if failure_records:
-        #     logger.info(f"【{self.pure_user_id}】失败分析摘要:")
-        #     for record in failure_records:
-        #         logger.info(f"  - 第{record['attempt']}次: 距离{record['slide_distance']}px, "
-        #                   f"步数{record['total_steps']}, 最终位置{record['final_left_px']}px")
-        # 
-        # # 输出当前统计摘要
-        # strategy_stats.log_summary()
-        # 
-        # # 尝试使用超级鹰打码平台兜底
-        # if self._try_chaojiying_fallback():
-        #     return True
-        # 
-        # return False
+        # 输出失败分析摘要
+        if failure_records:
+            logger.info(f"【{self.pure_user_id}】失败分析摘要:")
+            for record in failure_records:
+                logger.info(f"  - 第{record['attempt']}次: 距离{record['slide_distance']}px, "
+                          f"步数{record['total_steps']}, 最终位置{record['final_left_px']}px")
+        
+        return False
     
     def _try_chaojiying_fallback(self, max_retries: int = 3) -> bool:
         """使用超级鹰打码平台处理滑块验证
