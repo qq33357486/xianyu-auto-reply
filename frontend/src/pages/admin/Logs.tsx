@@ -172,7 +172,7 @@ export function Logs() {
                         {log.module}
                       </span>
                       <span className="text-xs text-slate-400 dark:text-slate-500">
-                        {new Date(log.created_at).toLocaleString()}
+                        {log.created_at.includes('T') ? new Date(log.created_at).toLocaleString() : log.created_at}
                       </span>
                     </div>
                     <p className="text-sm text-slate-700 dark:text-slate-300 break-all">{log.message}</p>

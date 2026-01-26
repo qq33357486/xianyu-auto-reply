@@ -52,13 +52,29 @@ export const getSystemLogs = async (params?: { page?: number; limit?: number; le
   if (params?.level) query.set('level', params.level.toUpperCase())
   const result = await get<{ logs?: string[]; total?: number }>(`/admin/logs?${query.toString()}`)
   // 后端返回 { logs: [...] } 格式，转换为 SystemLog 数组
-  const logs: SystemLog[] = (result.logs || []).map((log, index) => ({
-    id: String(index),
-    level: log.includes('ERROR') ? 'error' : log.includes('WARNING') ? 'warning' : 'info',
-    message: log,
-    module: 'system',
-    created_at: new Date().toISOString(),
-  }))
+  // 日志格式: 2026-01-27 00:51:37.577 | INFO | utils.chaojiying_util:chaojiying_recognize:42 - 消息内容
+  const logs: SystemLog[] = (result.logs || []).map((log, index) => {
+    // 解析日志行
+    const match = log.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) \| (\w+) \| ([^:]+):[^-]+ - (.*)$/)
+    if (match) {
+      const [, timestamp, level, module, message] = match
+      return {
+        id: String(index),
+        level: level === 'ERROR' ? 'error' : level === 'WARNING' ? 'warning' : 'info',
+        message: message,
+        module: module,
+        created_at: timestamp,
+      }
+    }
+    // 无法解析时，使用原始格式
+    return {
+      id: String(index),
+      level: log.includes('ERROR') ? 'error' : log.includes('WARNING') ? 'warning' : 'info',
+      message: log,
+      module: 'system',
+      created_at: new Date().toISOString(),
+    }
+  })
   return { success: true, data: logs, total: result.total }
 }
 
