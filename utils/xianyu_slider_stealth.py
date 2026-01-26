@@ -2633,19 +2633,12 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 截图失败")
                     continue
                 
-                # 使用 9902 类型识别滑块验证码（返回两个图形块坐标，x值相减得到滑动距离）
-                result = chaojiying_recognize(screenshot_bytes, codetype='9902')
+                # 使用 9101 类型识别滑块验证码（人工识别，返回目标点坐标）
+                # 9101 适合各种类型的滑块，包括闲鱼的简单滑块和图片滑块
+                result = chaojiying_recognize(screenshot_bytes, codetype='9101')
                 if not result:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 未返回有效结果")
                     continue
-                
-                # 9902 直接返回滑动距离，无需再计算
-                slide_distance = result.get('distance')
-                if not slide_distance or slide_distance <= 0:
-                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
-                    continue
-                
-                logger.info(f"【{self.pure_user_id}】[超级鹰] 9902识别成功，滑动距离: {slide_distance}px")
                 
                 # 找到滑块元素（在主页面和所有frames中查找）
                 slider = None
@@ -2699,11 +2692,32 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】[超级鹰] 无法获取滑块位置")
                     continue
                 
-                # 滑块按钮的中心位置
+                # 滑块按钮的左边缘和中心位置
+                slider_left_x = slider_box['x']
                 slider_center_x = slider_box['x'] + slider_box['width'] / 2
                 slider_center_y = slider_box['y'] + slider_box['height'] / 2
                 
-                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance}px")
+                # 计算滑动距离
+                slide_distance = None
+                if result.get('distance') and result.get('distance') > 0:
+                    # 直接返回滑动距离（9902类型）
+                    slide_distance = result.get('distance')
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 滑动距离={slide_distance}px")
+                elif result.get('x') and result.get('x') > 0:
+                    # 9101返回的是目标点在截图中的绝对坐标
+                    # 滑动距离 = 目标x - 滑块按钮左边缘x - 滑块宽度的一半（对准缺口中心）
+                    target_x = result.get('x')
+                    slide_distance = target_x - slider_left_x - slider_box['width'] / 2
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 目标x={target_x}, 滑块左边缘={slider_left_x:.0f}, 滑块宽度={slider_box['width']:.0f}, 计算距离={slide_distance:.0f}px")
+                else:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 返回格式无效: {result}")
+                    continue
+                
+                if slide_distance is None or slide_distance <= 0:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
+                    continue
+                
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance:.0f}px")
                 
                 # 执行滑动 - 使用更人性化的轨迹
                 self.page.mouse.move(slider_center_x, slider_center_y)
