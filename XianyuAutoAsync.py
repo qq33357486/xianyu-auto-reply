@@ -1975,7 +1975,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=False  # 显示浏览器窗口，方便观察调试
+                    headless=True  # 无头模式（线上环境）
                 )
 
                 # 在线程池中执行滑块验证

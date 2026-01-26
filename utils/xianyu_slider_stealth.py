@@ -2515,12 +2515,12 @@ class XianyuSliderStealth:
         try:
             from .chaojiying_util import chaojiying_recognize
         except ImportError:
-            logger.warning(f"【{self.pure_user_id}】无法导入超级鹰模块")
+            logger.warning(f"【{self.pure_user_id}】[超级鹰] 无法导入模块")
             return False
         
         for attempt in range(1, max_retries + 1):
             try:
-                logger.info(f"【{self.pure_user_id}】超级鹰打码平台识别... (第{attempt}/{max_retries}次)")
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 开始识别 (第{attempt}/{max_retries}次)")
                 
                 # 如果不是第一次尝试，等待一下让页面刷新
                 if attempt > 1:
@@ -2529,31 +2529,16 @@ class XianyuSliderStealth:
                 # 截图整个页面
                 screenshot_bytes = self.page.screenshot()
                 if not screenshot_bytes:
-                    logger.warning(f"【{self.pure_user_id}】截图失败")
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 截图失败")
                     continue
                 
                 # 使用 9101 类型识别滑块验证码（返回滑动距离）
                 result = chaojiying_recognize(screenshot_bytes, codetype='9101')
                 if not result:
-                    logger.warning(f"【{self.pure_user_id}】超级鹰未返回有效结果")
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 未返回有效结果")
                     continue
                 
-                # 获取滑动距离
-                slide_distance = result.get('distance')
-                if slide_distance:
-                    logger.info(f"【{self.pure_user_id}】超级鹰识别成功，滑动距离: {slide_distance}px")
-                elif result.get('x') and result.get('x') > 0:
-                    slide_distance = result.get('x')
-                    logger.info(f"【{self.pure_user_id}】超级鹰识别成功，目标x坐标: {slide_distance}px")
-                else:
-                    logger.warning(f"【{self.pure_user_id}】超级鹰返回无效: {result}")
-                    continue
-                
-                if slide_distance <= 0:
-                    logger.warning(f"【{self.pure_user_id}】滑动距离无效: {slide_distance}px")
-                    continue
-                
-                # 找到滑块元素（在主页面和所有frames中查找）
+                # 找到滑块元素（在主页面和所有frames中查找）- 先找滑块再计算距离
                 slider = None
                 slider_frame = None
                 # 使用与 find_slider_elements 一致的选择器
@@ -2574,7 +2559,7 @@ class XianyuSliderStealth:
                         element = self.page.locator(selector).first
                         if element and element.is_visible():
                             slider = element
-                            logger.info(f"【{self.pure_user_id}】在主页面找到滑块: {selector}")
+                            logger.info(f"【{self.pure_user_id}】[超级鹰] 主页面找到滑块: {selector}")
                             break
                     except:
                         pass
@@ -2588,7 +2573,7 @@ class XianyuSliderStealth:
                                 if element and element.is_visible():
                                     slider = element
                                     slider_frame = frame
-                                    logger.info(f"【{self.pure_user_id}】在Frame {idx}找到滑块: {selector}")
+                                    logger.info(f"【{self.pure_user_id}】[超级鹰] Frame{idx}找到滑块: {selector}")
                                     break
                             except:
                                 pass
@@ -2596,30 +2581,57 @@ class XianyuSliderStealth:
                             break
                 
                 if not slider:
-                    logger.warning(f"【{self.pure_user_id}】未找到滑块元素（已搜索主页面和{len(self.page.frames)}个frames）")
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 未找到滑块元素 (已搜索{len(self.page.frames)}个frames)")
                     continue
                 
                 # 获取滑块位置
                 slider_box = slider.bounding_box()
                 if not slider_box:
-                    logger.warning(f"【{self.pure_user_id}】无法获取滑块位置")
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 无法获取滑块位置")
                     continue
                 
-                logger.info(f"【{self.pure_user_id}】滑块位置: x={slider_box['x']:.1f}, y={slider_box['y']:.1f}, 滑动距离: {slide_distance}px")
-                
-                # 执行滑动
                 slider_center_x = slider_box['x'] + slider_box['width'] / 2
                 slider_center_y = slider_box['y'] + slider_box['height'] / 2
+                
+                # 计算滑动距离
+                slide_distance = None
+                if result.get('distance'):
+                    # 直接返回滑动距离
+                    slide_distance = result.get('distance')
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 滑动距离={slide_distance}px")
+                elif result.get('x') and result.get('x') > 0:
+                    # 返回的是目标点坐标，需要计算滑动距离 = 目标x - 滑块当前x
+                    target_x = result.get('x')
+                    slide_distance = target_x - slider_center_x
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 识别结果: 目标x={target_x}, 滑块x={slider_center_x:.0f}, 计算距离={slide_distance:.0f}px")
+                else:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 返回格式无效: {result}")
+                    continue
+                
+                if slide_distance is None or slide_distance <= 0:
+                    logger.warning(f"【{self.pure_user_id}】[超级鹰] 滑动距离无效: {slide_distance}")
+                    continue
+                
+                logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块位置: ({slider_box['x']:.0f}, {slider_box['y']:.0f}), 滑动距离: {slide_distance:.0f}px")
+                
+                # 执行滑动
                 self.page.mouse.move(slider_center_x, slider_center_y)
+                time.sleep(random.uniform(0.1, 0.2))
                 self.page.mouse.down()
                 
                 # 分步滑动，模拟人类行为
-                steps = 10
+                steps = random.randint(8, 12)
                 for i in range(1, steps + 1):
-                    x = slider_center_x + (slide_distance * i / steps)
-                    self.page.mouse.move(x, slider_center_y)
-                    time.sleep(0.05)
+                    progress = i / steps
+                    # 添加一点随机性
+                    x = slider_center_x + (slide_distance * progress) + random.uniform(-2, 2)
+                    y = slider_center_y + random.uniform(-1, 1)
+                    self.page.mouse.move(x, y)
+                    time.sleep(random.uniform(0.02, 0.06))
                 
+                # 最后精确到目标位置
+                self.page.mouse.move(slider_center_x + slide_distance, slider_center_y)
+                time.sleep(random.uniform(0.05, 0.1))
                 self.page.mouse.up()
                 
                 # 等待验证结果
@@ -2628,17 +2640,24 @@ class XianyuSliderStealth:
                 # 检查是否成功
                 page_content = self.page.content()
                 if '验证通过' in page_content or 'SUCCESS' in page_content or 'success' in page_content.lower():
-                    logger.info(f"【{self.pure_user_id}】✅ 超级鹰打码验证成功！(第{attempt}次)")
+                    logger.info(f"【{self.pure_user_id}】[超级鹰] 验证成功! (第{attempt}次)")
                     return True
-                else:
-                    logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次打码验证未通过")
-                    continue
+                
+                # 检查滑块是否消失（也可能是成功的标志）
+                try:
+                    if not slider.is_visible():
+                        logger.info(f"【{self.pure_user_id}】[超级鹰] 滑块已消失，验证可能成功 (第{attempt}次)")
+                        return True
+                except:
+                    pass
+                
+                logger.warning(f"【{self.pure_user_id}】[超级鹰] 第{attempt}次验证未通过")
                     
             except Exception as e:
-                logger.error(f"【{self.pure_user_id}】第{attempt}次超级鹰打码异常: {e}")
+                logger.error(f"【{self.pure_user_id}】[超级鹰] 第{attempt}次异常: {e}")
                 continue
         
-        logger.error(f"【{self.pure_user_id}】超级鹰打码失败，已尝试{max_retries}次")
+        logger.error(f"【{self.pure_user_id}】[超级鹰] 验证失败，已尝试{max_retries}次")
         return False
     
     def close_browser(self):
