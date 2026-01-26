@@ -1981,14 +1981,28 @@ class XianyuLive:
                 # 在线程池中执行滑块验证
                 import asyncio
                 import concurrent.futures
+                
+                def run_slider_verification():
+                    """在独立线程中运行滑块验证，避免 asyncio 事件循环检测"""
+                    # Playwright 检测 asyncio 的方式是检查当前线程是否有正在运行的事件循环
+                    # 新线程默认没有事件循环，所以不需要特殊处理
+                    # 但为了安全起见，确保没有继承的运行中循环
+                    import asyncio
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # 如果能获取到运行中的循环，说明有问题（不应该发生在新线程）
+                        logger.warning(f"【{self.cookie_id}】检测到运行中的事件循环，这不应该发生在新线程中")
+                    except RuntimeError:
+                        # 没有运行中的循环，这是正常的
+                        pass
+                    return slider_stealth.run(verification_url)
 
                 loop = asyncio.get_event_loop()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     # 执行滑块验证
                     success, cookies = await loop.run_in_executor(
                         executor,
-                        slider_stealth.run,
-                        verification_url
+                        run_slider_verification
                     )
 
                 if success and cookies:
@@ -2450,15 +2464,35 @@ class XianyuLive:
                 )
             
             # 在单独的线程中运行同步的登录方法
+            # 使用 ThreadPoolExecutor + run_in_executor 避免 Playwright Sync API 检测到 asyncio 事件循环
             import asyncio
-            slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=not show_browser)
-            result = await asyncio.to_thread(
-                slider.login_with_password_playwright,
-                account=username,
-                password=password,
-                show_browser=show_browser,
-                notification_callback=notification_callback_wrapper
-            )
+            from concurrent.futures import ThreadPoolExecutor
+            
+            def run_playwright_login():
+                """在独立线程中运行 Playwright 登录，避免 asyncio 事件循环检测"""
+                # Playwright 检测 asyncio 的方式是检查当前线程是否有正在运行的事件循环
+                # 新线程默认没有事件循环，所以不需要特殊处理
+                # 但为了安全起见，确保没有继承的运行中循环
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    # 如果能获取到运行中的循环，说明有问题（不应该发生在新线程）
+                    logger.warning(f"【{self.cookie_id}】检测到运行中的事件循环，这不应该发生在新线程中")
+                except RuntimeError:
+                    # 没有运行中的循环，这是正常的
+                    pass
+                
+                slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=not show_browser)
+                return slider.login_with_password_playwright(
+                    account=username,
+                    password=password,
+                    show_browser=show_browser,
+                    notification_callback=notification_callback_wrapper
+                )
+            
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                result = await loop.run_in_executor(executor, run_playwright_login)
             
             if result:
                 logger.info(f"【{self.cookie_id}】密码登录成功，获取到Cookie")

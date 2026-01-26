@@ -1700,7 +1700,9 @@ def patch_login_with_password_headful():
                 # 启动浏览器
                 mode_text = "有头模式" if show_browser else "无头模式"
                 logger.info(f"【{user_id}】启动Playwright浏览器（{mode_text}）...")
-                playwright = sync_playwright().start()
+                # 使用 Playwright 单例（解决多次调用 sync_playwright().start() 的问题）
+                from utils.xianyu_slider_stealth import PlaywrightSingleton
+                playwright = PlaywrightSingleton.get_instance()
                 
                 try:
                     # 设置用户数据目录（保留缓存）

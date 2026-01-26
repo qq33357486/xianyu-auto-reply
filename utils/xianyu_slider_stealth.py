@@ -241,12 +241,66 @@ class RetryStrategyStats:
 # 全局策略统计实例
 strategy_stats = RetryStrategyStats()
 
+# Playwright 单例管理器（解决 sync_playwright 只能启动一次的问题）
+class PlaywrightSingleton:
+    """Playwright 单例管理器，确保 sync_playwright 只启动一次"""
+    _instance = None
+    _playwright = None
+    _lock = threading.Lock()
+    _ref_count = 0
+    
+    @classmethod
+    def get_instance(cls):
+        """获取 Playwright 实例（线程安全）"""
+        with cls._lock:
+            if cls._playwright is None:
+                logger.info("初始化 Playwright 单例...")
+                cls._playwright = sync_playwright().start()
+                logger.info("Playwright 单例初始化成功")
+            cls._ref_count += 1
+            return cls._playwright
+    
+    @classmethod
+    def release(cls):
+        """释放引用（当引用计数为0时不会真正关闭，保持单例）"""
+        with cls._lock:
+            if cls._ref_count > 0:
+                cls._ref_count -= 1
+    
+    @classmethod
+    def force_close(cls):
+        """强制关闭 Playwright（仅在程序退出时调用）"""
+        with cls._lock:
+            if cls._playwright is not None:
+                try:
+                    cls._playwright.stop()
+                except:
+                    pass
+                cls._playwright = None
+                cls._ref_count = 0
+
+
+def _should_force_headless() -> bool:
+    """检测是否应该强制使用无头模式（Docker/无显示环境）"""
+    # Docker 环境
+    if os.path.exists('/.dockerenv') or os.environ.get('DOCKER_ENV'):
+        return True
+    # Linux 无 DISPLAY 环境变量
+    if os.name != 'nt' and not os.environ.get('DISPLAY'):
+        return True
+    return False
+
+
 class XianyuSliderStealth:
     
     def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True):
         self.user_id = user_id
         self.enable_learning = enable_learning
-        self.headless = headless  # 是否使用无头模式
+        # 自动检测环境，在无显示环境中强制使用无头模式
+        if not headless and _should_force_headless():
+            logger.info(f"【{concurrency_manager._extract_pure_user_id(user_id)}】检测到无显示环境（Docker/无X Server），自动切换为无头模式")
+            headless = True
+        self.headless = headless
         self.browser = None
         self.page = None
         self.context = None
@@ -307,10 +361,10 @@ class XianyuSliderStealth:
     def init_browser(self):
         """初始化浏览器 - 增强反检测版本"""
         try:
-            # 启动 Playwright
-            logger.info(f"【{self.pure_user_id}】启动Playwright...")
-            self.playwright = sync_playwright().start()
-            logger.info(f"【{self.pure_user_id}】Playwright启动成功")
+            # 使用 Playwright 单例（解决多次调用 sync_playwright().start() 的问题）
+            logger.info(f"【{self.pure_user_id}】获取Playwright单例...")
+            self.playwright = PlaywrightSingleton.get_instance()
+            logger.info(f"【{self.pure_user_id}】Playwright获取成功")
             
             # 随机选择浏览器特征
             browser_features = self._get_random_browser_features()
@@ -3268,6 +3322,11 @@ class XianyuSliderStealth:
                 logger.error(f"【{self.pure_user_id}】账号或密码不能为空")
                 return None
             
+            # 自动检测环境，在无显示环境中强制使用无头模式
+            if show_browser and _should_force_headless():
+                logger.info(f"【{self.pure_user_id}】检测到无显示环境（Docker/无X Server），自动切换为无头模式")
+                show_browser = False
+            
             browser_mode = "有头" if show_browser else "无头"
             logger.info(f"【{self.pure_user_id}】开始{browser_mode}模式密码登录流程（使用Playwright）...")
             logger.info(f"【{self.pure_user_id}】账号: {account}")
@@ -3317,8 +3376,8 @@ class XianyuSliderStealth:
                             logger.info(f"【{self.pure_user_id}】使用浏览器版本: {chromium_dir.name}")
                             break
             
-            # 启动浏览器
-            playwright = sync_playwright().start()
+            # 使用 Playwright 单例（解决多次调用 sync_playwright().start() 的问题）
+            playwright = PlaywrightSingleton.get_instance()
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir,
                 headless=not show_browser,
