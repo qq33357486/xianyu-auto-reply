@@ -1965,6 +1965,12 @@ def patch_login_with_password_headful():
                                                 break
                                         else:
                                             logger.error(f"【{user_id}】❌ 已达到最大刷新次数({max_page_refreshes})，停止尝试")
+                                            # 记录滑块验证失败异常
+                                            try:
+                                                from reply_server import set_account_exception
+                                                set_account_exception(user_id, 'slider_failed', f'滑块验证失败，已尝试{max_page_refreshes}次刷新页面')
+                                            except Exception as e:
+                                                logger.debug(f"【{user_id}】记录异常状态失败: {e}")
                                             break
                             
                             # 1. 检查账密错误
@@ -2020,6 +2026,7 @@ def patch_login_with_password_headful():
                             
                             # 获取并显示二维码链接
                             qr_url = None
+                            screenshot_path = None
                             if qr_frame:
                                 try:
                                     frame_url = qr_frame.url
@@ -2029,8 +2036,26 @@ def patch_login_with_password_headful():
                                     logger.warning(f"【{user_id}】{frame_url}")
                                     logger.warning(f"【{user_id}】" + "=" * 60)
                                     logger.info(f"【{user_id}】请在浏览器中完成验证，程序将持续等待...")
+                                    
+                                    # 截图保存
+                                    try:
+                                        import os
+                                        screenshots_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'uploads', 'images')
+                                        os.makedirs(screenshots_dir, exist_ok=True)
+                                        screenshot_path = os.path.join(screenshots_dir, f'face_verify_{user_id}_{int(time.time())}.jpg')
+                                        page.screenshot(path=screenshot_path, type='jpeg', quality=80)
+                                        logger.info(f"【{user_id}】人脸验证截图已保存: {screenshot_path}")
+                                    except Exception as ss_err:
+                                        logger.warning(f"【{user_id}】保存截图失败: {ss_err}")
                                 except Exception as e:
                                     logger.debug(f"【{user_id}】获取frame URL失败: {e}")
+                            
+                            # 记录人脸验证异常状态
+                            try:
+                                from reply_server import set_account_exception
+                                set_account_exception(user_id, 'face_verification', '需要人脸验证，请扫码完成验证', screenshot_path)
+                            except Exception as e:
+                                logger.debug(f"【{user_id}】记录异常状态失败: {e}")
                             
                             # 发送通知
                             if qr_url:
@@ -2058,6 +2083,12 @@ def patch_login_with_password_headful():
                             
                             logger.info(f"【{user_id}】二维码/人脸验证已完成")
                             login_verified = True  # 标记为已验证
+                            # 清除异常状态
+                            try:
+                                from reply_server import clear_account_exception
+                                clear_account_exception(user_id)
+                            except Exception as e:
+                                logger.debug(f"【{user_id}】清除异常状态失败: {e}")
                         elif not login_verified:
                             logger.info(f"【{user_id}】未检测到二维码/人脸验证")
                             

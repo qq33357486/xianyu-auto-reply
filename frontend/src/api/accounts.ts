@@ -187,3 +187,32 @@ export const toggleAIReply = (cookieId: string, enabled: boolean): Promise<ApiRe
 export const getAllAIReplySettings = (): Promise<Record<string, AIReplySettings>> => {
   return get('/ai-reply-settings')
 }
+
+// ========================= 账号异常状态管理 =========================
+
+export interface AccountException {
+  type: string
+  type_name: string
+  message: string
+  screenshot_path?: string
+  timestamp: number
+  timestamp_str: string
+}
+
+// 获取所有账号的异常状态
+export const getAllAccountExceptions = (): Promise<Record<string, AccountException>> => {
+  return get('/accounts/exceptions')
+}
+
+// 获取单个账号的异常状态
+export const getAccountException = (accountId: string): Promise<{
+  has_exception: boolean
+  exception: AccountException | null
+}> => {
+  return get(`/accounts/${accountId}/exception`)
+}
+
+// 清除账号异常状态
+export const clearAccountException = (accountId: string): Promise<ApiResponse> => {
+  return del(`/accounts/${accountId}/exception`)
+}

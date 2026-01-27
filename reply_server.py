@@ -56,6 +56,35 @@ qr_check_processed = {}  # 记录已处理的session: {session_id: {'processed':
 password_login_sessions = {}  # {session_id: {'account_id': str, 'account': str, 'password': str, 'show_browser': bool, 'status': str, 'verification_url': str, 'qr_code_url': str, 'slider_instance': object, 'task': asyncio.Task, 'timestamp': float}}
 password_login_locks = defaultdict(lambda: asyncio.Lock())
 
+# 账号异常状态管理（内存存储，重启后清除）
+account_exceptions = {}  # {account_id: {'type': str, 'message': str, 'screenshot_path': str, 'timestamp': float}}
+EXCEPTION_TYPES = {
+    'face_verification': '人脸验证',
+    'slider_failed': '滑块验证失败',
+    'cookie_expired': 'Cookie过期'
+}
+
+def set_account_exception(account_id: str, exception_type: str, message: str, screenshot_path: str = None):
+    """设置账号异常状态"""
+    account_exceptions[account_id] = {
+        'type': exception_type,
+        'type_name': EXCEPTION_TYPES.get(exception_type, exception_type),
+        'message': message,
+        'screenshot_path': screenshot_path,
+        'timestamp': time.time()
+    }
+    logger.warning(f"【{account_id}】账号异常: {EXCEPTION_TYPES.get(exception_type, exception_type)} - {message}")
+
+def clear_account_exception(account_id: str):
+    """清除账号异常状态"""
+    if account_id in account_exceptions:
+        del account_exceptions[account_id]
+        logger.info(f"【{account_id}】账号异常状态已清除")
+
+def get_account_exception(account_id: str):
+    """获取账号异常状态"""
+    return account_exceptions.get(account_id)
+
 # 不再需要单独的密码初始化，由数据库初始化时处理
 
 
@@ -1401,6 +1430,57 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10
         })
     return result
+
+
+# ========================= 账号异常状态管理接口 =========================
+
+@app.get("/accounts/exceptions")
+def get_all_account_exceptions(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取当前用户所有账号的异常状态"""
+    user_id = current_user['user_id']
+    from db_manager import db_manager
+    user_cookies = db_manager.get_all_cookies(user_id)
+    
+    result = {}
+    for cookie_id in user_cookies.keys():
+        if cookie_id in account_exceptions:
+            exception_data = account_exceptions[cookie_id].copy()
+            # 转换时间戳为可读格式
+            exception_data['timestamp_str'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(exception_data['timestamp']))
+            result[cookie_id] = exception_data
+    return result
+
+
+@app.get("/accounts/{account_id}/exception")
+def get_single_account_exception(account_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取指定账号的异常状态"""
+    user_id = current_user['user_id']
+    from db_manager import db_manager
+    user_cookies = db_manager.get_all_cookies(user_id)
+    
+    if account_id not in user_cookies:
+        raise HTTPException(status_code=403, detail="无权访问该账号")
+    
+    exception_data = account_exceptions.get(account_id)
+    if exception_data:
+        result = exception_data.copy()
+        result['timestamp_str'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result['timestamp']))
+        return {'has_exception': True, 'exception': result}
+    return {'has_exception': False, 'exception': None}
+
+
+@app.delete("/accounts/{account_id}/exception")
+def clear_single_account_exception(account_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """清除指定账号的异常状态"""
+    user_id = current_user['user_id']
+    from db_manager import db_manager
+    user_cookies = db_manager.get_all_cookies(user_id)
+    
+    if account_id not in user_cookies:
+        raise HTTPException(status_code=403, detail="无权访问该账号")
+    
+    clear_account_exception(account_id)
+    return {'success': True, 'message': '异常状态已清除'}
 
 
 @app.post("/cookies")

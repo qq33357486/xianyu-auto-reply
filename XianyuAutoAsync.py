@@ -4446,6 +4446,16 @@ class XianyuLive:
             attachment_path: 附件路径（可选，用于发送截图）
         """
         try:
+            # 记录账号异常状态（用于前端显示）
+            try:
+                from reply_server import set_account_exception
+                if notification_type == 'face_verification':
+                    set_account_exception(self.cookie_id, 'face_verification', error_message, attachment_path)
+                elif notification_type in ['token_refresh_failed', 'token_init_failed', 'cookie_update_failed']:
+                    set_account_exception(self.cookie_id, 'cookie_expired', error_message)
+            except Exception as e:
+                logger.debug(f"【{self.cookie_id}】记录异常状态失败: {e}")
+            
             # 检查是否是正常的令牌过期，这种情况不需要发送通知
             if self._is_normal_token_expiry(error_message):
                 logger.warning(f"检测到正常的令牌过期，跳过通知: {error_message}")

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Eye, EyeOff, AlertTriangle } from 'lucide-react'
-import { getAccountDetails, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, getAllAIReplySettings, getAIReplySettings, updateAIReplySettings, toggleAIReply, updateAccountLoginInfo, type AIReplySettings } from '@/api/accounts'
+import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Eye, EyeOff, AlertTriangle, AlertCircle } from 'lucide-react'
+import { getAccountDetails, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, getAllAIReplySettings, getAIReplySettings, updateAIReplySettings, toggleAIReply, updateAccountLoginInfo, getAllAccountExceptions, clearAccountException, type AIReplySettings, type AccountException } from '@/api/accounts'
 import { getKeywords, getDefaultReply, updateDefaultReply } from '@/api/keywords'
 import { checkDefaultPassword } from '@/api/settings'
 import { useUIStore } from '@/store/uiStore'
@@ -72,6 +72,11 @@ export function Accounts() {
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
 
+  // 账号异常状态
+  const [accountExceptions, setAccountExceptions] = useState<Record<string, AccountException>>({})
+  const [exceptionModalAccount, setExceptionModalAccount] = useState<string | null>(null)
+  const [exceptionModalData, setExceptionModalData] = useState<AccountException | null>(null)
+
   const loadAccounts = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
@@ -82,6 +87,14 @@ export function Accounts() {
       let aiSettings: Record<string, AIReplySettings> = {}
       try {
         aiSettings = await getAllAIReplySettings()
+      } catch {
+        // ignore
+      }
+
+      // 获取所有账号的异常状态
+      try {
+        const exceptions = await getAllAccountExceptions()
+        setAccountExceptions(exceptions)
       } catch {
         // ignore
       }
@@ -155,6 +168,34 @@ export function Accounts() {
     setManualCookie('')
     setManualLoading(false)
   }, [clearQrCheck])
+
+  // ==================== 账号异常状态 ====================
+  const openExceptionModal = (accountId: string) => {
+    const exception = accountExceptions[accountId]
+    if (exception) {
+      setExceptionModalAccount(accountId)
+      setExceptionModalData(exception)
+    }
+  }
+
+  const closeExceptionModal = () => {
+    setExceptionModalAccount(null)
+    setExceptionModalData(null)
+  }
+
+  const handleClearException = async () => {
+    if (!exceptionModalAccount) return
+    try {
+      await clearAccountException(exceptionModalAccount)
+      const newExceptions = { ...accountExceptions }
+      delete newExceptions[exceptionModalAccount]
+      setAccountExceptions(newExceptions)
+      closeExceptionModal()
+      addToast({ type: 'success', message: '异常状态已清除' })
+    } catch {
+      addToast({ type: 'error', message: '清除异常状态失败' })
+    }
+  }
 
   // ==================== 扫码登录 ====================
   const startQRCodeLogin = async () => {
@@ -624,10 +665,22 @@ export function Accounts() {
                       </span>
                     </td>
                     <td>
-                      <span className={`inline-flex items-center gap-1.5 ${account.enabled !== false ? 'text-green-600' : 'text-gray-400'}`}>
-                        <span className={`status-dot ${account.enabled !== false ? 'status-dot-success' : 'status-dot-danger'}`} />
-                        {account.enabled !== false ? '启用' : '禁用'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center gap-1.5 ${account.enabled !== false ? 'text-green-600' : 'text-gray-400'}`}>
+                          <span className={`status-dot ${account.enabled !== false ? 'status-dot-success' : 'status-dot-danger'}`} />
+                          {account.enabled !== false ? '启用' : '禁用'}
+                        </span>
+                        {accountExceptions[account.id] && (
+                          <button
+                            onClick={() => openExceptionModal(account.id)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                            title={`异常: ${accountExceptions[account.id].type_name}`}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            <span>异常</span>
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <button
@@ -1223,6 +1276,88 @@ export function Accounts() {
                 ) : (
                   '保存'
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 账号异常详情弹窗 */}
+      {exceptionModalAccount && exceptionModalData && (
+        <div className="modal-overlay">
+          <div className="modal-content max-w-lg">
+            <div className="modal-header">
+              <h2 className="modal-title flex items-center gap-2 text-red-600">
+                <AlertCircle className="w-5 h-5" />
+                账号异常
+              </h2>
+              <button onClick={closeExceptionModal} className="modal-close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-4">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 dark:text-slate-400 text-sm">账号ID:</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200">{exceptionModalAccount}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 dark:text-slate-400 text-sm">异常类型:</span>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-800 dark:text-red-200">
+                      {exceptionModalData.type_name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 dark:text-slate-400 text-sm">发生时间:</span>
+                    <span className="text-slate-700 dark:text-slate-300 text-sm">{exceptionModalData.timestamp_str}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 dark:text-slate-400 text-sm">异常信息:</span>
+                    <p className="mt-1 text-slate-700 dark:text-slate-300 text-sm bg-white dark:bg-slate-800 rounded p-2">
+                      {exceptionModalData.message}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              
+              {exceptionModalData.screenshot_path && (
+                <div className="mb-4">
+                  <p className="text-slate-600 dark:text-slate-400 text-sm mb-2">验证截图:</p>
+                  <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+                    <img 
+                      src={`/uploads/images/${exceptionModalData.screenshot_path.split('/').pop()}`}
+                      alt="验证截图"
+                      className="w-full h-auto"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none'
+                      }}
+                    />
+                  </div>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">
+                    请使用闲鱼APP扫描上方二维码完成验证
+                  </p>
+                </div>
+              )}
+              
+              <div className="text-slate-600 dark:text-slate-400 text-sm">
+                {exceptionModalData.type === 'face_verification' && (
+                  <p>请使用闲鱼APP扫码完成人脸验证后，点击"清除异常"按钮。</p>
+                )}
+                {exceptionModalData.type === 'slider_failed' && (
+                  <p>滑块验证多次失败，请检查网络环境或稍后重试。</p>
+                )}
+                {exceptionModalData.type === 'cookie_expired' && (
+                  <p>Cookie已过期，请重新登录获取新的Cookie。</p>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={closeExceptionModal} className="btn-ios-secondary">
+                关闭
+              </button>
+              <button onClick={handleClearException} className="btn-ios-primary bg-red-500 hover:bg-red-600">
+                清除异常
               </button>
             </div>
           </div>
