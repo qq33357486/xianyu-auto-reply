@@ -95,10 +95,6 @@ class SecureConfirm:
             self._current_item_id = item_id
             logger.debug(f"【{self.cookie_id}】设置当前商品ID: {item_id}")
 
-        # 确保session已创建
-        if not self.session:
-            raise Exception("Session未创建")
-
         params = {
             'jsv': '2.7.2',
             'appKey': '34839810',
@@ -143,21 +139,22 @@ class SecureConfirm:
         try:
             logger.info(f"【{self.cookie_id}】开始自动确认发货，订单ID: {order_id}")
             
-            # 【修复】使用 asyncio.wait_for 包装请求，避免 aiohttp 内部超时上下文错误
-            async def do_confirm_request():
-                async with self.session.post(
-                    'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
-                    params=params,
-                    data=data,
-                    headers=headers
-                ) as response:
-                    res_json = await response.json()
-                    # 返回响应头和JSON数据（使用不同变量名避免作用域冲突）
-                    response_headers = dict(response.headers)
-                    return response_headers, res_json
+            # 【修复】创建独立的临时 session 执行请求，避免 aiohttp 超时上下文错误
+            # 问题原因：当从 FastAPI API 端点调用时，复用主 session 会导致
+            # "Timeout context manager should be used inside a task" 错误
+            connector = aiohttp.TCPConnector(limit=10)
+            timeout = aiohttp.ClientTimeout(total=30)
             
             try:
-                response_headers, res_json = await asyncio.wait_for(do_confirm_request(), timeout=30.0)
+                async with aiohttp.ClientSession(connector=connector, timeout=timeout) as temp_session:
+                    async with temp_session.post(
+                        'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
+                        params=params,
+                        data=data,
+                        headers=headers
+                    ) as response:
+                        res_json = await response.json()
+                        response_headers = dict(response.headers)
             except asyncio.TimeoutError:
                 logger.error(f"【{self.cookie_id}】自动确认发货请求超时（30秒）")
                 if retry_count < 2:

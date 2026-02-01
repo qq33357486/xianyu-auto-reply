@@ -5180,6 +5180,11 @@ class DBManager:
 
                 for row in cursor.fetchall():
                     log_info = dict(zip(columns, row))
+                    # 转换时区：UTC -> 东八区
+                    if 'created_at' in log_info:
+                        log_info['created_at'] = self._utc_to_local(log_info['created_at'])
+                    if 'updated_at' in log_info:
+                        log_info['updated_at'] = self._utc_to_local(log_info['updated_at'])
                     logs.append(log_info)
 
                 return logs

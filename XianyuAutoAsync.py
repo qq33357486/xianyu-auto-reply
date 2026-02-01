@@ -1317,7 +1317,9 @@ class XianyuLive:
         """统一处理自动发货逻辑"""
         try:
             # 检查商品是否属于当前cookies
-            if item_id and item_id != "未知商品":
+            # 【修复】如果item_id是自动生成的（以auto_开头），跳过商品归属检查，因为这种情况下无法提取到真实商品ID
+            # 这通常发生在收到"等待卖家发货"的简化消息时，消息中不包含商品ID信息
+            if item_id and item_id != "未知商品" and not item_id.startswith("auto_"):
                 try:
                     from db_manager import db_manager
                     item_info = db_manager.get_item_info(self.cookie_id, item_id)
@@ -1328,6 +1330,8 @@ class XianyuLive:
                 except Exception as e:
                     logger.error(f'[{msg_time}] 【{self.cookie_id}】检查商品归属失败: {self._safe_str(e)}，跳过自动发货')
                     return
+            elif item_id and item_id.startswith("auto_"):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】⚠️ 商品ID为自动生成({item_id})，跳过归属检查，尝试从订单中获取真实商品信息')
 
             # 提取订单ID
             order_id = self._extract_order_id(message)
@@ -8047,11 +8051,29 @@ class XianyuLive:
                     try:
                         send_user_name = message.get("3", {}).get("userName", "未知用户")
                         send_user_id = user_id
-                        chat_id = message.get("3", {}).get("cid", "").split('@')[0] if message.get("3", {}).get("cid") else None
+                        
+                        # 【修复】多种方式提取chat_id，优先从message["3"]["cid"]，其次从message["1"]
+                        chat_id = None
+                        # 方式1: 从message["3"]["cid"]提取
+                        if message.get("3", {}).get("cid"):
+                            chat_id = message["3"]["cid"].split('@')[0]
+                            logger.info(f'【{self.cookie_id}】从message[3][cid]提取到chat_id: {chat_id}')
+                        # 方式2: 从message["1"]提取（当message["1"]是字符串格式如"57741535061@goofish"时）
+                        if not chat_id and isinstance(message.get("1"), str):
+                            chat_id_raw = message["1"]
+                            chat_id = chat_id_raw.split('@')[0] if '@' in chat_id_raw else chat_id_raw
+                            logger.info(f'【{self.cookie_id}】从message[1]提取到chat_id: {chat_id}')
+                        # 方式3: 从user_id提取（作为最后的备选方案）
+                        if not chat_id and user_id:
+                            chat_id = str(user_id).split('@')[0]
+                            logger.info(f'【{self.cookie_id}】从user_id提取到chat_id: {chat_id}')
+                        
                         if chat_id:
                             # 调用现有的自动发货方法（内部有防重复机制）
                             await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
                                                            item_id, chat_id, msg_time)
+                        else:
+                            logger.warning(f'[{msg_time}] 【{self.cookie_id}】⚠️ 检测到等待卖家发货但无法提取chat_id，消息结构: {list(message.keys())}')
                     except Exception as e:
                         logger.error(f'[{msg_time}] 【{self.cookie_id}】处理等待卖家发货触发自动发货失败: {self._safe_str(e)}')
                     return
@@ -8150,21 +8172,61 @@ class XianyuLive:
                 chat_id_raw = message_1.get("2", "")
                 chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
                 
-                # 提取图片URL列表（用于传递给AI）
+                # 提取图片URL列表和contentType（用于传递给AI和过滤系统消息）
                 image_urls = []
+                content_type = None  # 用于判断消息类型
                 try:
                     if "6" in message_1 and isinstance(message_1["6"], dict):
                         msg_content = message_1["6"]
                         if "3" in msg_content and isinstance(msg_content["3"], dict):
                             content_data = msg_content["3"]
+                            # 提取 contentType（字段 "4" 中）
+                            # contentType=1: 普通文本消息
+                            # contentType=2: 图片消息
+                            # contentType=6: textCard 系统卡片消息
+                            # contentType=14: tip 提示消息
+                            # contentType=26: dxCard 交易卡片消息
+                            content_type = content_data.get("4") or content_data.get("contentType")
                             # contentType 为 2 表示图片消息
-                            if content_data.get("contentType") == 2:
+                            if content_type == 2:
                                 pics = content_data.get("image", {}).get("pics", [])
                                 image_urls = [pic["url"] for pic in pics if pic.get("url")]
                                 if image_urls:
                                     logger.info(f"【{self.cookie_id}】检测到用户发送的图片: {len(image_urls)} 张")
                 except Exception as img_e:
                     logger.debug(f"提取图片URL失败: {self._safe_str(img_e)}")
+                
+                # 【重要】基于 contentType 过滤系统消息
+                # 只有 contentType=1（普通文本）和 contentType=2（图片）需要AI回复
+                # 其他类型（6=textCard, 14=tip, 26=dxCard等）都是系统消息，不需要回复
+                # 【修复】但是 contentType=26 的付款消息需要触发自动发货，不能直接过滤
+                if content_type is not None and content_type not in [1, 2]:
+                    # 检查是否是付款触发消息（contentType=26 的 dxCard 交易卡片）
+                    is_payment_trigger = False
+                    if content_type == 26 and send_message in ['[我已付款，等待你发货]', '[已付款，待发货]']:
+                        is_payment_trigger = True
+                        logger.info(f'【{self.cookie_id}】🚀 检测到付款消息(contentType=26): {send_message}，触发自动发货检查')
+                        # 提取订单ID用于自动发货
+                        order_id = self._extract_order_id(message)
+                        if order_id:
+                            msg_time_now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                            # 尝试从消息中提取真实的商品ID
+                            real_item_id = None
+                            try:
+                                reminder_url = message_10.get("reminderUrl", "")
+                                if isinstance(reminder_url, str) and "itemId=" in reminder_url:
+                                    real_item_id = reminder_url.split("itemId=")[1].split("&")[0]
+                                    logger.info(f"【{self.cookie_id}】从付款消息提取到商品ID: {real_item_id}")
+                            except:
+                                pass
+                            final_item_id = real_item_id if real_item_id else item_id
+                            # 触发自动发货
+                            await self._handle_auto_delivery(websocket, message, send_user_name, send_user_id,
+                                                           final_item_id, chat_id, msg_time_now)
+                    
+                    if not is_payment_trigger:
+                        logger.info(f'【{self.cookie_id}】系统消息不处理 (contentType={content_type}): {send_message[:50] if len(send_message) > 50 else send_message}')
+                    return
 
             except Exception as e:
                 logger.error(f"提取聊天消息信息失败: {self._safe_str(e)}")
@@ -8276,6 +8338,13 @@ class XianyuLive:
                 return
             elif send_message == '已发货':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】发货确认消息不处理')
+                return
+            # 【兜底】过滤平台警告/提示类系统消息（以特定前缀开头的消息）
+            elif send_message.startswith('[请勿引导买家脱离'):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】平台警告消息不处理: {send_message[:30]}...')
+                return
+            elif send_message.startswith('[该行为涉嫌'):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】平台警告消息不处理: {send_message[:30]}...')
                 return
             # 【重要】检查是否为自动发货触发消息 - 即使在人工接入暂停期间也要处理
             elif self._is_auto_delivery_trigger(send_message):
