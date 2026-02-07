@@ -196,6 +196,8 @@ class XianyuLive:
     # 类级别的密码登录时间记录，用于防止重复登录
     _last_password_login_time = {}  # {cookie_id: timestamp}
     _password_login_cooldown = 60  # 密码登录冷却时间：60秒
+    _password_login_consecutive_failures = {}  # {cookie_id: int} 密码登录连续失败计数
+    _password_login_max_failures = 10  # 连续失败超过此次数后停止自动重试，要求人工介入
     
     def _safe_str(self, e):
         """安全地将异常转换为字符串"""
@@ -2529,7 +2531,10 @@ class XianyuLive:
                 
                 # 记录密码登录时间，防止重复登录
                 XianyuLive._last_password_login_time[self.cookie_id] = time.time()
-                logger.warning(f"【{self.cookie_id}】已记录密码登录时间，冷却期 {XianyuLive._password_login_cooldown} 秒")
+                # 重置连续失败计数
+                XianyuLive._password_login_consecutive_failures[self.cookie_id] = 0
+                self.token_refresh_retry_count = 0
+                logger.warning(f"【{self.cookie_id}】已记录密码登录时间，冷却期 {XianyuLive._password_login_cooldown} 秒，连续失败计数已重置")
                 
                 # 更新cookies并重启任务
                 update_success = await self._update_cookies_and_restart(new_cookies_str)
@@ -5091,7 +5096,12 @@ class XianyuLive:
                             self.confirmed_orders[order_id] = current_time
                             logger.info(f"🎉 自动确认发货成功！订单ID: {order_id}")
                         else:
-                            logger.warning(f"⚠️ 自动确认发货失败: {confirm_result.get('error', '未知错误')}")
+                            error_msg = confirm_result.get('error', '未知错误')
+                            logger.warning(f"⚠️ 自动确认发货失败: {error_msg}")
+                            # 【增强】如果确认发货失败且未被加入队列，手动加入待确认队列
+                            if not confirm_result.get('queued'):
+                                await self.add_pending_confirm_order(order_id, item_id)
+                                logger.info(f"【{self.cookie_id}】订单 {order_id} 确认发货失败，已加入待确认队列等待重试")
                             # 即使确认发货失败，也继续发送发货内容
 
             # 检查是否存在订单ID，只有存在订单ID才处理发货内容
@@ -5471,15 +5481,36 @@ class XianyuLive:
                         else:
                             # 刷新失败，增加重试计数
                             self.token_refresh_retry_count += 1
+                            retry_interval = self.token_retry_interval  # 默认5分钟
                             
                             if getattr(self, 'last_token_refresh_status', None) in ("skipped_cooldown", "restarted_after_cookie_refresh"):
-                                logger.info(f"【{self.cookie_id}】Token刷新未执行或已重启（正常），将在{self.token_retry_interval // 60}分钟后重试")
+                                logger.info(f"【{self.cookie_id}】Token刷新未执行或已重启（正常），将在{retry_interval // 60}分钟后重试")
                             else:
-                                logger.error(f"【{self.cookie_id}】Token刷新失败（第{self.token_refresh_retry_count}次），将在{self.token_retry_interval // 60}分钟后重试")
+                                # 指数退避：连续失败次数越多，等待时间越长
+                                consecutive_failures = self.token_refresh_retry_count
+                                if consecutive_failures <= 3:
+                                    retry_interval = self.token_retry_interval  # 5分钟
+                                elif consecutive_failures <= 5:
+                                    retry_interval = self.token_retry_interval * 3  # 15分钟
+                                elif consecutive_failures <= 10:
+                                    retry_interval = self.token_retry_interval * 6  # 30分钟
+                                else:
+                                    retry_interval = self.token_retry_interval * 12  # 60分钟
+                                
+                                logger.error(f"【{self.cookie_id}】Token刷新失败（第{consecutive_failures}次），将在{retry_interval // 60}分钟后重试")
+                                
+                                # 连续失败超过上限，发送人工介入通知
+                                max_failures = XianyuLive._password_login_max_failures
+                                if consecutive_failures >= max_failures:
+                                    logger.error(f"【{self.cookie_id}】⚠️ Token刷新已连续失败{consecutive_failures}次（超过上限{max_failures}次），请人工检查账号状态")
+                                    await self.send_token_refresh_notification(
+                                        f"Token刷新已连续失败{consecutive_failures}次，请检查账号状态或手动更新Cookie",
+                                        "token_refresh_max_failures"
+                                    )
 
                             self.current_token = None
                             await self.send_token_refresh_notification("Token定时刷新失败，将自动重试", "token_scheduled_refresh_failed")
-                            await self._interruptible_sleep(self.token_retry_interval)
+                            await self._interruptible_sleep(retry_interval)
                             continue
                     await self._interruptible_sleep(60)
                 except asyncio.CancelledError:

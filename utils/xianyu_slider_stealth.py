@@ -261,7 +261,7 @@ class PlaywrightSingleton:
     
     @classmethod
     def get_instance(cls):
-        """获取 Playwright 实例（线程安全）"""
+        """获取 Playwright 实例（线程安全，带健康检查）"""
         with cls._lock:
             # 如果之前被关闭了，需要重新初始化
             if cls._playwright is None or cls._is_closed:
@@ -273,6 +273,28 @@ class PlaywrightSingleton:
                 except Exception as e:
                     logger.error(f"Playwright 单例初始化失败: {e}")
                     raise
+            else:
+                # 健康检查：验证现有实例是否仍然可用
+                try:
+                    _ = cls._playwright.chromium
+                except Exception:
+                    logger.warning("Playwright 单例实例已失效，重新初始化...")
+                    try:
+                        cls._playwright.stop()
+                    except Exception:
+                        pass
+                    cls._playwright = None
+                    cls._is_closed = True
+                    cls._ref_count = 0
+                    # 释放锁后重新获取实例（避免死锁）
+                    # 直接在锁内重新初始化
+                    try:
+                        cls._playwright = sync_playwright().start()
+                        cls._is_closed = False
+                        logger.info("Playwright 单例重新初始化成功")
+                    except Exception as e:
+                        logger.error(f"Playwright 单例重新初始化失败: {e}")
+                        raise
             cls._ref_count += 1
             return cls._playwright
     
@@ -4272,19 +4294,22 @@ class XianyuSliderStealth:
                     self.playwright = original_playwright
             
             finally:
-                # 关闭浏览器
+                # 关闭浏览器上下文（不销毁 Playwright 单例，只释放引用）
                 try:
                     context.close()
-                    playwright.stop()
-                    logger.info(f"【{self.pure_user_id}】浏览器已关闭，缓存已保存")
+                    logger.info(f"【{self.pure_user_id}】浏览器上下文已关闭，缓存已保存")
                 except Exception as e:
-                    logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
-                    try:
-                        playwright.stop()
-                    except:
-                        pass
+                    logger.warning(f"【{self.pure_user_id}】关闭浏览器上下文时出错: {e}")
+                finally:
+                    # 释放 PlaywrightSingleton 引用计数，不调用 stop()
+                    PlaywrightSingleton.release()
         
         except Exception as e:
+            error_msg = str(e)
+            # 检测 Playwright 已关闭的错误，主动标记单例需要重新初始化
+            if "Event loop is closed" in error_msg or "Playwright already stopped" in error_msg:
+                logger.warning(f"【{self.pure_user_id}】检测到Playwright已关闭，标记单例需要重新初始化")
+                PlaywrightSingleton.mark_closed()
             logger.error(f"【{self.pure_user_id}】密码登录流程异常: {e}")
             import traceback
             logger.error(traceback.format_exc())

@@ -87,8 +87,16 @@ class SecureConfirm:
     async def auto_confirm(self, order_id, item_id=None, retry_count=0):
         """自动确认发货 - 使用真实商品ID刷新token"""
         if retry_count >= 4:  # 最多重试3次
-            logger.error("自动确认发货失败，重试次数过多")
-            return {"error": "自动确认发货失败，重试次数过多"}
+            logger.error(f"【{self.cookie_id}】自动确认发货失败，重试次数过多，订单ID: {order_id}")
+            # 【修复】重试次数达到上限时，将订单加入待确认队列，等待后续Token刷新后重试
+            if self.main_instance:
+                try:
+                    await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                    logger.warning(f"【{self.cookie_id}】订单 {order_id} 已加入待确认发货队列，等待Token刷新后重试")
+                    return {"error": "自动确认发货失败，已加入待确认队列", "order_id": order_id, "queued": True}
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】将订单加入待确认队列失败: {self._safe_str(e)}")
+            return {"error": "自动确认发货失败，重试次数过多", "order_id": order_id}
 
         # 保存item_id供Token刷新使用
         if item_id:
@@ -160,6 +168,14 @@ class SecureConfirm:
                 if retry_count < 2:
                     logger.info(f"【{self.cookie_id}】超时，准备重试...")
                     return await self.auto_confirm(order_id, item_id, retry_count + 1)
+                # 【修复】超时重试失败后也加入待确认队列
+                if self.main_instance:
+                    try:
+                        await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                        logger.warning(f"【{self.cookie_id}】请求超时重试失败，订单 {order_id} 已加入待确认队列")
+                        return {"error": "请求超时，已加入待确认队列", "order_id": order_id, "queued": True}
+                    except:
+                        pass
                 return {"error": "请求超时", "order_id": order_id}
 
             # 检查并更新Cookie
@@ -195,10 +211,12 @@ class SecureConfirm:
                 error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
                 logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
 
-                # 检测Token过期错误，触发强制刷新后再重试
-                if ('TOKEN_EXOIRED' in error_msg or 'TOKEN_EXPIRED' in error_msg or 'ILLEGAL_ACCESS' in error_msg):
+                # 检测Token/Session过期错误，触发强制刷新后再重试
+                # 包括: TOKEN_EXPIRED, TOKEN_EXOIRED(拼写错误), ILLEGAL_ACCESS, SESSION_EXPIRED
+                if ('TOKEN_EXOIRED' in error_msg or 'TOKEN_EXPIRED' in error_msg or 
+                    'ILLEGAL_ACCESS' in error_msg or 'SESSION_EXPIRED' in error_msg):
                     if retry_count < 2 and self.main_instance:
-                        logger.info(f"【{self.cookie_id}】检测到Token过期，触发强制刷新...")
+                        logger.info(f"【{self.cookie_id}】检测到Token/Session过期，触发强制刷新...")
                         
                         # 调用主实例的强制刷新方法（绕过冷却机制）
                         try:
@@ -221,15 +239,22 @@ class SecureConfirm:
                             # 刷新异常时也加入队列
                             try:
                                 await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                                return {"error": f"Token刷新异常，已加入待确认队列", "order_id": order_id, "queued": True}
                             except:
                                 pass
                             return {"error": f"Token刷新异常: {self._safe_str(refresh_e)}", "order_id": order_id}
+                    elif self.main_instance:
+                        # 重试次数已达上限，直接加入待确认队列
+                        logger.warning(f"【{self.cookie_id}】Token/Session过期且重试次数已达上限，将订单加入待确认队列...")
+                        try:
+                            await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                            return {"error": "Token/Session过期，已加入待确认队列", "order_id": order_id, "queued": True}
+                        except Exception as e:
+                            logger.error(f"【{self.cookie_id}】将订单加入待确认队列失败: {self._safe_str(e)}")
+                        return {"error": "Token/Session过期，重试次数已达上限", "order_id": order_id}
                     else:
-                        # 没有主实例或重试次数已达上限，尝试从主实例同步cookies后重试
-                        if self.main_instance:
-                            self.cookies_str = self.main_instance.cookies_str
-                            self.cookies = trans_cookies(self.cookies_str)
-                            logger.info(f"【{self.cookie_id}】已同步最新cookies，准备重试...")
+                        # 没有主实例，无法加入队列
+                        return {"error": "Token/Session过期，无法加入待确认队列", "order_id": order_id}
 
                 return await self.auto_confirm(order_id, item_id, retry_count + 1)
 
@@ -242,4 +267,12 @@ class SecureConfirm:
                 logger.info(f"【{self.cookie_id}】网络异常，准备重试...")
                 return await self.auto_confirm(order_id, item_id, retry_count + 1)
 
+            # 【修复】网络异常重试次数达到上限时，也加入待确认队列
+            if self.main_instance:
+                try:
+                    await self.main_instance.add_pending_confirm_order(order_id, item_id)
+                    logger.warning(f"【{self.cookie_id}】网络异常重试失败，订单 {order_id} 已加入待确认队列")
+                    return {"error": f"网络异常，已加入待确认队列", "order_id": order_id, "queued": True}
+                except:
+                    pass
             return {"error": f"网络异常: {self._safe_str(e)}", "order_id": order_id}

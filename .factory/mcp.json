@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "memos-api-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@memtensor/memos-api-mcp@latest"],
+      "env": {
+        "MEMOS_API_KEY": "mpg-E/aaXeb9tgS8Yy5bgQVCvu49MpPLDZSvF959qg2e",
+        "MEMOS_USER_ID": "xianyu-auto-reply",
+        "MEMOS_CHANNEL": "MODELSCOPE"
+      }
+    }
+  }
+}

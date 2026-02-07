@@ -2166,7 +2166,7 @@ def patch_login_with_password_headful():
                         return None
                 
                 finally:
-                    # 关闭浏览器
+                    # 关闭浏览器上下文（不销毁 Playwright 单例，只释放引用）
                     try:
                         if show_browser:
                             logger.info(f"【{user_id}】有头模式：保持浏览器打开，等待手动关闭...")
@@ -2174,16 +2174,19 @@ def patch_login_with_password_headful():
                             # 不关闭浏览器，让用户手动关闭
                         else:
                             context.close()
-                            playwright.stop()
-                            logger.info(f"【{user_id}】无头模式：浏览器已关闭，缓存已保存")
+                            logger.info(f"【{user_id}】无头模式：浏览器上下文已关闭，缓存已保存")
                     except Exception as e:
-                        logger.warning(f"【{user_id}】关闭浏览器时出错: {e}")
-                        try:
-                            playwright.stop()
-                        except:
-                            pass
+                        logger.warning(f"【{user_id}】关闭浏览器上下文时出错: {e}")
+                    finally:
+                        # 释放 PlaywrightSingleton 引用计数，不调用 stop()
+                        PlaywrightSingleton.release()
             
             except Exception as e:
+                error_msg = str(e)
+                # 检测 Playwright 已关闭的错误，主动标记单例需要重新初始化
+                if "Event loop is closed" in error_msg or "Playwright already stopped" in error_msg:
+                    logger.warning(f"【{user_id}】检测到Playwright已关闭，标记单例需要重新初始化")
+                    PlaywrightSingleton.mark_closed()
                 logger.error(f"【{user_id}】密码登录流程异常: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
