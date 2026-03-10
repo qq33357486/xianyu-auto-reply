@@ -1392,33 +1392,65 @@ class XianyuLive:
                     # 检查是否需要多数量发货
                     from db_manager import db_manager
                     quantity_to_send = 1  # 默认发送1个
+                    order_detail = None  # 订单详情，用于后续保存
+
+                    # 【修复】先获取订单详情，确保订单在数据库中存在（解决订单状态无法更新的问题）
+                    if order_id:
+                        logger.info(f"【{self.cookie_id}】获取订单详情以确保订单存在: {order_id}")
+                        try:
+                            order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id, chat_id)
+                            if order_detail:
+                                logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
+                            else:
+                                logger.warning(f"【{self.cookie_id}】订单详情获取失败，尝试创建基本订单记录: {order_id}")
+                                # 如果获取订单详情失败，至少创建一个基本的订单记录
+                                try:
+                                    cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
+                                    if cookie_info:
+                                        existing_order = db_manager.get_order_by_id(order_id)
+                                        if not existing_order:
+                                            db_manager.insert_or_update_order(
+                                                order_id=order_id,
+                                                item_id=item_id,
+                                                buyer_id=send_user_id,
+                                                chat_id=chat_id,
+                                                cookie_id=self.cookie_id
+                                            )
+                                            logger.info(f"【{self.cookie_id}】已创建基本订单记录: {order_id}")
+                                except Exception as create_e:
+                                    logger.error(f"【{self.cookie_id}】创建基本订单记录失败: {self._safe_str(create_e)}")
+                        except Exception as e:
+                            logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
 
                     # 检查商品是否开启了多数量发货
                     multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(self.cookie_id, item_id)
 
-                    if multi_quantity_delivery and order_id:
-                        logger.info(f"商品 {item_id} 开启了多数量发货，获取订单详情...")
-                        try:
-                            # 使用现有方法获取订单详情
-                            order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
-                            if order_detail and order_detail.get('quantity'):
-                                try:
-                                    order_quantity = int(order_detail['quantity'])
-                                    if order_quantity > 1:
+                    # 【修复】即使没有开启多数量发货，也要检查订单数量，避免购买多个只发1个的问题
+                    if order_id:
+                        # 如果已经获取了订单详情，直接使用
+                        if order_detail and order_detail.get('quantity'):
+                            try:
+                                order_quantity = int(order_detail['quantity'])
+                                if order_quantity > 1:
+                                    if multi_quantity_delivery:
                                         quantity_to_send = order_quantity
-                                        logger.info(f"从订单详情获取数量: {order_quantity}，将发送 {quantity_to_send} 个卡券")
+                                        logger.info(f"【{self.cookie_id}】商品开启多数量发货，订单数量: {order_quantity}，将发送 {quantity_to_send} 个卡券")
                                     else:
-                                        logger.info(f"订单数量为 {order_quantity}，发送单个卡券")
-                                except (ValueError, TypeError):
-                                    logger.warning(f"订单数量格式无效: {order_detail.get('quantity')}，发送单个卡券")
+                                        # 【关键修复】即使没开启多数量发货，也要按订单数量发货
+                                        quantity_to_send = order_quantity
+                                        logger.warning(f"【{self.cookie_id}】⚠️ 商品未开启多数量发货，但订单数量为 {order_quantity}，仍按订单数量发货")
+                                else:
+                                    logger.info(f"【{self.cookie_id}】订单数量为 {order_quantity}，发送单个卡券")
+                            except (ValueError, TypeError):
+                                logger.warning(f"【{self.cookie_id}】订单数量格式无效: {order_detail.get('quantity')}，发送单个卡券")
+                        else:
+                            # 如果没有订单详情，尝试重新获取
+                            if multi_quantity_delivery:
+                                logger.info(f"【{self.cookie_id}】商品 {item_id} 开启了多数量发货，但未获取到订单数量，发送单个卡券")
                             else:
-                                logger.info(f"未获取到订单数量信息，发送单个卡券")
-                        except Exception as e:
-                            logger.error(f"获取订单详情失败: {self._safe_str(e)}，发送单个卡券")
-                    elif not multi_quantity_delivery:
-                        logger.info(f"商品 {item_id} 未开启多数量发货，发送单个卡券")
+                                logger.info(f"【{self.cookie_id}】商品 {item_id} 未开启多数量发货，发送单个卡券")
                     else:
-                        logger.info(f"无订单ID，发送单个卡券")
+                        logger.info(f"【{self.cookie_id}】无订单ID，发送单个卡券")
 
                     # 多次调用自动发货方法，每次获取不同的内容
                     delivery_contents = []
@@ -1795,7 +1827,8 @@ class XianyuLive:
                                 # await self._restart_instance()
                                 
                                 # 重新尝试刷新token（递归调用，但有深度限制）
-                                return await self.refresh_token(captcha_retry_count + 1)
+                                # 【修复】保持force参数，避免滑块验证成功后被冷却机制拦截
+                                return await self.refresh_token(captcha_retry_count + 1, force=force)
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败")
 
@@ -2295,7 +2328,7 @@ class XianyuLive:
         return new_token is not None
 
     async def add_pending_confirm_order(self, order_id: str, item_id: str = None):
-        """将订单加入待确认发货队列
+        """将订单加入待确认发货队列（内存+数据库持久化）
         
         当Token过期导致确认发货失败时，将订单暂存到队列中，
         等Token刷新成功后自动重试
@@ -2304,6 +2337,14 @@ class XianyuLive:
             order_id: 订单ID
             item_id: 商品ID（可选）
         """
+        # 先保存到数据库（持久化）
+        try:
+            from db_manager import db_manager
+            db_manager.add_pending_confirm_order(self.cookie_id, order_id, item_id)
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】保存待确认订单到数据库失败: {e}")
+        
+        # 同时保存到内存队列
         async with self.pending_confirm_lock:
             # 检查是否已在队列中
             for existing in self.pending_confirm_orders:
@@ -2314,13 +2355,26 @@ class XianyuLive:
             logger.warning(f"【{self.cookie_id}】订单 {order_id} 已加入待确认发货队列，当前队列长度: {len(self.pending_confirm_orders)}")
 
     async def process_pending_confirm_orders(self):
-        """处理待确认发货队列
+        """处理待确认发货队列（内存+数据库）
         
         在Token刷新成功后调用，自动重试之前因Token过期而失败的订单
         """
+        from db_manager import db_manager
+        
         async with self.pending_confirm_lock:
             if not self.pending_confirm_orders:
-                return
+                # 内存队列为空，尝试从数据库恢复
+                db_orders = db_manager.get_pending_confirm_orders(self.cookie_id)
+                if db_orders:
+                    logger.info(f"【{self.cookie_id}】从数据库恢复 {len(db_orders)} 个待确认订单")
+                    for order in db_orders:
+                        self.pending_confirm_orders.append((
+                            order['order_id'], 
+                            order['item_id'], 
+                            time.mktime(time.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S')) if order['created_at'] else time.time()
+                        ))
+                else:
+                    return
             
             queue_length = len(self.pending_confirm_orders)
             logger.info(f"【{self.cookie_id}】开始处理待确认发货队列，共 {queue_length} 个订单")
@@ -2333,10 +2387,12 @@ class XianyuLive:
         fail_count = 0
         
         for order_id, item_id, add_time in orders_to_process:
-            # 超过30分钟的订单跳过
-            if time.time() - add_time > 1800:
-                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过30分钟，跳过处理")
+            # 超过2小时的订单跳过（延长超时时间）
+            if time.time() - add_time > 7200:
+                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过2小时，跳过处理")
                 skip_count += 1
+                # 从数据库中移除
+                db_manager.update_pending_confirm_order(order_id, self.cookie_id, status='expired')
                 continue
             
             try:
@@ -2344,11 +2400,18 @@ class XianyuLive:
                 result = await self.auto_confirm(order_id, item_id)
                 if result and result.get('success'):
                     success_count += 1
+                    # 成功后从数据库中移除
+                    db_manager.remove_pending_confirm_order(order_id, self.cookie_id)
                 else:
                     fail_count += 1
+                    # 更新重试次数
+                    db_manager.update_pending_confirm_order(order_id, self.cookie_id, 
+                        retry_count=1, error_message=str(result) if result else 'Unknown error')
             except Exception as e:
                 logger.error(f"【{self.cookie_id}】处理待确认订单 {order_id} 失败: {self._safe_str(e)}")
                 fail_count += 1
+                db_manager.update_pending_confirm_order(order_id, self.cookie_id, 
+                    retry_count=1, error_message=str(e))
             
             # 每个订单处理后等待0.5秒，避免请求过快
             await asyncio.sleep(0.5)
@@ -5581,6 +5644,8 @@ class XianyuLive:
         
         定期检查待确认队列，清理过期订单，并在Token有效时重试确认发货
         """
+        from db_manager import db_manager
+        
         try:
             while True:
                 try:
@@ -5595,7 +5660,23 @@ class XianyuLive:
                     # 初始化变量（修复作用域问题，确保continue后变量有定义）
                     valid_orders = []
                     
+                    # 先从数据库恢复订单到内存
                     async with self.pending_confirm_lock:
+                        if not self.pending_confirm_orders:
+                            db_orders = db_manager.get_pending_confirm_orders(self.cookie_id)
+                            if db_orders:
+                                logger.info(f"【{self.cookie_id}】从数据库恢复 {len(db_orders)} 个待确认订单")
+                                for order in db_orders:
+                                    try:
+                                        add_time = time.mktime(time.strptime(order['created_at'], '%Y-%m-%d %H:%M:%S'))
+                                    except:
+                                        add_time = time.time()
+                                    self.pending_confirm_orders.append((
+                                        order['order_id'], 
+                                        order['item_id'], 
+                                        add_time
+                                    ))
+                        
                         if not self.pending_confirm_orders:
                             continue
                         
@@ -5603,23 +5684,25 @@ class XianyuLive:
                         queue_length = len(self.pending_confirm_orders)
                         logger.info(f"【{self.cookie_id}】定时检查待确认队列，当前{queue_length}个订单")
                         
-                        # 清理过期订单
+                        # 清理过期订单（延长到2小时）
                         expired_orders = []
                         for order_id, item_id, add_time in self.pending_confirm_orders:
                             age = current_time - add_time
-                            if age > self.pending_confirm_max_age:
+                            if age > 7200:  # 2小时
                                 expired_orders.append((order_id, age))
                             else:
                                 valid_orders.append((order_id, item_id, add_time))
                         
                         if expired_orders:
                             for order_id, age in expired_orders:
-                                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过{age/60:.1f}分钟，已移除")
+                                logger.warning(f"【{self.cookie_id}】订单 {order_id} 在队列中超过{age/60:.1f}分钟，已标记为过期")
+                                # 更新数据库状态为过期
+                                db_manager.update_pending_confirm_order(order_id, self.cookie_id, status='expired')
                             self.pending_confirm_orders = valid_orders
                             
                             # 发送告警通知
                             await self.send_token_refresh_notification(
-                                f"待确认发货队列有{len(expired_orders)}个订单超时未处理，请检查Token状态",
+                                f"⚠️ 待确认发货队列有{len(expired_orders)}个订单超时未处理！订单号: {', '.join([o[0] for o in expired_orders])}。请手动检查发货状态或重新登录账号。",
                                 "pending_confirm_expired"
                             )
                     
@@ -5632,6 +5715,12 @@ class XianyuLive:
                         new_token = await self._refresh_token_with_retry(max_retries=2)
                         if new_token:
                             await self.process_pending_confirm_orders()
+                        else:
+                            # Token刷新失败，发送紧急告警
+                            await self.send_token_refresh_notification(
+                                f"🚨 待确认发货队列有{len(valid_orders)}个订单等待处理，但Token刷新失败！请立即检查账号状态或手动发货。订单号: {', '.join([o[0] for o in valid_orders])}",
+                                "pending_confirm_urgent"
+                            )
                         
                 except asyncio.CancelledError:
                     logger.info(f"【{self.cookie_id}】待确认队列重试循环收到取消信号")
@@ -7692,6 +7781,18 @@ class XianyuLive:
             if not AUTO_REPLY.get('enabled', True):
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】自动回复已禁用")
                 return
+
+            # 【重要】检查当前用户是否为卖家（商品是否属于当前账号）
+            # 如果商品不属于当前账号，说明当前用户是买家，不应该触发AI回复
+            if item_id and not item_id.startswith('auto_'):
+                try:
+                    item_info = db_manager.get_item_info(self.cookie_id, item_id)
+                    if not item_info:
+                        # 商品不属于当前账号，当前用户是买家，跳过自动回复
+                        logger.info(f"[{msg_time}] 【{self.cookie_id}】商品 {item_id} 不属于当前账号（当前用户是买家），跳过自动回复")
+                        return
+                except Exception as e:
+                    logger.warning(f"[{msg_time}] 【{self.cookie_id}】检查商品归属失败: {e}，继续处理")
 
             # 检查该chat_id是否处于暂停状态
             if pause_manager.is_chat_paused(chat_id):

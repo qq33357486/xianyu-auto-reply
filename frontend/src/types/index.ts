@@ -103,7 +103,7 @@ export interface Order {
   spec_value?: string
   quantity: number
   amount: string
-  status: OrderStatus
+  order_status: OrderStatus
   is_bargain?: boolean
   created_at?: string
   updated_at?: string

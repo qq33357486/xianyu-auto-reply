@@ -441,6 +441,23 @@ class DBManager:
             )
             ''')
 
+            # 创建待确认发货队列表（持久化存储）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_confirm_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                item_id TEXT,
+                status TEXT DEFAULT 'pending',
+                retry_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
+                UNIQUE(cookie_id, order_id)
+            )
+            ''')
+
             # 插入默认系统设置（不包括管理员密码，由reply_server.py初始化）
             cursor.execute('''
             INSERT OR IGNORE INTO system_settings (key, value, description) VALUES
@@ -4587,7 +4604,7 @@ class DBManager:
                         'spec_value': row[5],
                         'quantity': row[6],
                         'amount': row[7],
-                        'status': row[8],
+                        'order_status': row[8],
                         'cookie_id': row[9],
                         'is_bargain': bool(row[10]) if row[10] is not None else False,
                         'created_at': self._utc_to_local(row[11]),
@@ -4653,7 +4670,7 @@ class DBManager:
                         'spec_value': row[5],
                         'quantity': row[6],
                         'amount': row[7],
-                        'status': row[8],
+                        'order_status': row[8],
                         'is_bargain': bool(row[9]) if row[9] is not None else False,
                         'created_at': self._utc_to_local(row[10]),
                         'updated_at': self._utc_to_local(row[11])
@@ -4717,7 +4734,7 @@ class DBManager:
                         'spec_value': row[5],
                         'quantity': row[6],
                         'amount': row[7],
-                        'status': row[8],
+                        'order_status': row[8],
                         'cookie_id': row[9],
                         'is_bargain': bool(row[10]) if row[10] is not None else False,
                         'created_at': self._utc_to_local(row[11]),
@@ -4760,7 +4777,7 @@ class DBManager:
                         'spec_value': row[5],
                         'quantity': row[6],
                         'amount': row[7],
-                        'status': row[8],
+                        'order_status': row[8],
                         'cookie_id': row[9],
                         'is_bargain': bool(row[10]) if row[10] is not None else False,
                         'created_at': self._utc_to_local(row[11]),
@@ -5333,6 +5350,173 @@ class DBManager:
         except Exception as e:
             logger.error(f"清理历史数据时出错: {e}")
             return {'error': str(e)}
+
+    # ==================== 待确认发货队列操作 ====================
+    
+    def add_pending_confirm_order(self, cookie_id: str, order_id: str, item_id: str = None) -> bool:
+        """添加待确认发货订单到数据库
+        
+        Args:
+            cookie_id: Cookie ID
+            order_id: 订单ID
+            item_id: 商品ID（可选）
+            
+        Returns:
+            bool: 添加成功返回True
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO pending_confirm_orders 
+                    (cookie_id, order_id, item_id, status, retry_count, updated_at)
+                    VALUES (?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP)
+                ''', (cookie_id, order_id, item_id))
+                self.conn.commit()
+                logger.info(f"添加待确认发货订单: cookie_id={cookie_id}, order_id={order_id}")
+                return True
+        except Exception as e:
+            logger.error(f"添加待确认发货订单失败: {e}")
+            return False
+    
+    def get_pending_confirm_orders(self, cookie_id: str = None, status: str = 'pending') -> List[Dict]:
+        """获取待确认发货订单列表
+        
+        Args:
+            cookie_id: Cookie ID，为None时获取所有
+            status: 订单状态，默认获取pending状态
+            
+        Returns:
+            List[Dict]: 订单列表
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                if cookie_id:
+                    cursor.execute('''
+                        SELECT id, cookie_id, order_id, item_id, status, retry_count, 
+                               error_message, created_at, updated_at
+                        FROM pending_confirm_orders 
+                        WHERE cookie_id = ? AND status = ?
+                        ORDER BY created_at ASC
+                    ''', (cookie_id, status))
+                else:
+                    cursor.execute('''
+                        SELECT id, cookie_id, order_id, item_id, status, retry_count,
+                               error_message, created_at, updated_at
+                        FROM pending_confirm_orders 
+                        WHERE status = ?
+                        ORDER BY created_at ASC
+                    ''', (status,))
+                
+                orders = []
+                for row in cursor.fetchall():
+                    orders.append({
+                        'id': row[0],
+                        'cookie_id': row[1],
+                        'order_id': row[2],
+                        'item_id': row[3],
+                        'status': row[4],
+                        'retry_count': row[5],
+                        'error_message': row[6],
+                        'created_at': row[7],
+                        'updated_at': row[8]
+                    })
+                return orders
+        except Exception as e:
+            logger.error(f"获取待确认发货订单失败: {e}")
+            return []
+    
+    def update_pending_confirm_order(self, order_id: str, cookie_id: str, status: str = None, 
+                                      retry_count: int = None, error_message: str = None) -> bool:
+        """更新待确认发货订单状态
+        
+        Args:
+            order_id: 订单ID
+            cookie_id: Cookie ID
+            status: 新状态（可选）
+            retry_count: 重试次数（可选）
+            error_message: 错误信息（可选）
+            
+        Returns:
+            bool: 更新成功返回True
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                updates = ['updated_at = CURRENT_TIMESTAMP']
+                params = []
+                
+                if status is not None:
+                    updates.append('status = ?')
+                    params.append(status)
+                if retry_count is not None:
+                    updates.append('retry_count = ?')
+                    params.append(retry_count)
+                if error_message is not None:
+                    updates.append('error_message = ?')
+                    params.append(error_message)
+                
+                params.extend([order_id, cookie_id])
+                
+                cursor.execute(f'''
+                    UPDATE pending_confirm_orders 
+                    SET {', '.join(updates)}
+                    WHERE order_id = ? AND cookie_id = ?
+                ''', params)
+                self.conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"更新待确认发货订单失败: {e}")
+            return False
+    
+    def remove_pending_confirm_order(self, order_id: str, cookie_id: str) -> bool:
+        """从待确认队列中移除订单
+        
+        Args:
+            order_id: 订单ID
+            cookie_id: Cookie ID
+            
+        Returns:
+            bool: 移除成功返回True
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    DELETE FROM pending_confirm_orders 
+                    WHERE order_id = ? AND cookie_id = ?
+                ''', (order_id, cookie_id))
+                self.conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"移除待确认发货订单失败: {e}")
+            return False
+    
+    def cleanup_expired_pending_orders(self, max_age_hours: int = 24) -> int:
+        """清理过期的待确认发货订单
+        
+        Args:
+            max_age_hours: 最大保留时间（小时），默认24小时
+            
+        Returns:
+            int: 清理的订单数量
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    DELETE FROM pending_confirm_orders 
+                    WHERE created_at < datetime('now', '-' || ? || ' hours')
+                    AND status = 'pending'
+                ''', (max_age_hours,))
+                self.conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"清理了 {cursor.rowcount} 条过期的待确认发货订单（{max_age_hours}小时前）")
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f"清理过期待确认发货订单失败: {e}")
+            return 0
 
 
 # 全局单例

@@ -3468,8 +3468,10 @@ class XianyuSliderStealth:
                             logger.info(f"【{self.pure_user_id}】使用浏览器版本: {chromium_dir.name}")
                             break
             
-            # 使用 Playwright 单例（解决多次调用 sync_playwright().start() 的问题）
-            playwright = PlaywrightSingleton.get_instance()
+            # 【修复】不使用 PlaywrightSingleton，每次创建新的 Playwright 实例
+            # 避免在 ThreadPoolExecutor 中运行时的跨线程问题
+            # 原问题：cannot switch to a different thread (which happens to have exited)
+            playwright = sync_playwright().start()
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir,
                 headless=not show_browser,
@@ -4294,22 +4296,22 @@ class XianyuSliderStealth:
                     self.playwright = original_playwright
             
             finally:
-                # 关闭浏览器上下文（不销毁 Playwright 单例，只释放引用）
+                # 关闭浏览器上下文和 Playwright 实例
                 try:
                     context.close()
                     logger.info(f"【{self.pure_user_id}】浏览器上下文已关闭，缓存已保存")
                 except Exception as e:
                     logger.warning(f"【{self.pure_user_id}】关闭浏览器上下文时出错: {e}")
                 finally:
-                    # 释放 PlaywrightSingleton 引用计数，不调用 stop()
-                    PlaywrightSingleton.release()
+                    # 【修复】关闭新创建的 Playwright 实例
+                    try:
+                        playwright.stop()
+                        logger.info(f"【{self.pure_user_id}】Playwright 实例已关闭")
+                    except Exception as e:
+                        logger.warning(f"【{self.pure_user_id}】关闭 Playwright 实例时出错: {e}")
         
         except Exception as e:
             error_msg = str(e)
-            # 检测 Playwright 已关闭的错误，主动标记单例需要重新初始化
-            if "Event loop is closed" in error_msg or "Playwright already stopped" in error_msg:
-                logger.warning(f"【{self.pure_user_id}】检测到Playwright已关闭，标记单例需要重新初始化")
-                PlaywrightSingleton.mark_closed()
             logger.error(f"【{self.pure_user_id}】密码登录流程异常: {e}")
             import traceback
             logger.error(traceback.format_exc())

@@ -259,7 +259,7 @@ export function Orders() {
                 </tr>
               ) : (
                 filteredOrders.map((order) => {
-                  const status = statusMap[order.status] || statusMap.unknown
+                  const status = statusMap[order.order_status] || statusMap.unknown
                   return (
                     <tr key={order.id}>
                       <td className="font-mono text-sm">{order.order_id}</td>
@@ -418,8 +418,8 @@ export function Orders() {
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 dark:border-gray-700">
                         <span className="text-gray-500">订单状态</span>
-                        <span className={statusMap[orderDetail.status]?.class || 'badge-gray'}>
-                          {statusMap[orderDetail.status]?.label || '未知'}
+                        <span className={statusMap[orderDetail.order_status]?.class || 'badge-gray'}>
+                          {statusMap[orderDetail.order_status]?.label || '未知'}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 dark:border-gray-700">
