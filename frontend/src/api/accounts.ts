@@ -1,17 +1,17 @@
-import { get, post, put, del } from '@/utils/request'
+import { del, get, post, put } from '@/utils/request'
 import type { Account, AccountDetail, ApiResponse } from '@/types'
 
 // 获取账号列表（返回账号ID数组）
 export const getAccounts = async (): Promise<Account[]> => {
   const ids: string[] = await get('/cookies')
   // 后端返回的是账号ID数组，转换为Account对象数组
-  return ids.map(id => ({ 
-    id, 
-    cookie: '', 
+  return ids.map(id => ({
+    id,
+    cookie: '',
     enabled: true,
     use_ai_reply: false,
     use_default_reply: false,
-    auto_confirm: false
+    auto_confirm: false,
   }))
 }
 
@@ -138,11 +138,29 @@ export const checkQRLoginStatus = async (sessionId: string): Promise<{
 // 检查密码登录状态
 export const checkPasswordLoginStatus = (sessionId: string): Promise<{
   success: boolean
-  status: 'pending' | 'processing' | 'success' | 'failed' | 'verification_required'
+  status: 'pending' | 'processing' | 'success' | 'failed' | 'verification_required' | 'error' | 'not_found' | 'forbidden'
   message?: string
   account_id?: string
+  verification_url?: string | null
+  screenshot_path?: string | null
+  qr_code_url?: string | null
 }> => {
-  return get(`/password-login/status/${sessionId}`)
+  return get<{
+    status: string
+    message?: string
+    account_id?: string
+    verification_url?: string | null
+    screenshot_path?: string | null
+    qr_code_url?: string | null
+  }>(`/password-login/status/${sessionId}`).then((result) => ({
+    success: !['error', 'not_found', 'forbidden'].includes(result.status),
+    status: result.status as 'pending' | 'processing' | 'success' | 'failed' | 'verification_required' | 'error' | 'not_found' | 'forbidden',
+    message: result.message,
+    account_id: result.account_id,
+    verification_url: result.verification_url,
+    screenshot_path: result.screenshot_path,
+    qr_code_url: result.qr_code_url,
+  }))
 }
 
 // AI 回复设置接口 - 与后端 AIReplySettings 模型对应
@@ -195,6 +213,9 @@ export interface AccountException {
   type_name: string
   message: string
   screenshot_path?: string
+  action_type?: string
+  verification_url?: string
+  session_id?: string
   timestamp: number
   timestamp_str: string
 }

@@ -61,16 +61,24 @@ account_exceptions = {}  # {account_id: {'type': str, 'message': str, 'screensho
 EXCEPTION_TYPES = {
     'face_verification': '人脸验证',
     'slider_failed': '滑块验证失败',
-    'cookie_expired': 'Cookie过期'
+    'cookie_expired': 'Cookie过期',
+    'no_credentials': '缺少账号密码',
+    'session_expired': 'Session过期',
+    'token_failed': 'Token获取失败',
+    'login_failed': '登录失败'
 }
 
-def set_account_exception(account_id: str, exception_type: str, message: str, screenshot_path: str = None):
+def set_account_exception(account_id: str, exception_type: str, message: str, screenshot_path: str = None,
+                          action_type: str = None, verification_url: str = None, session_id: str = None):
     """设置账号异常状态"""
     account_exceptions[account_id] = {
         'type': exception_type,
         'type_name': EXCEPTION_TYPES.get(exception_type, exception_type),
         'message': message,
         'screenshot_path': screenshot_path,
+        'action_type': action_type,
+        'verification_url': verification_url,
+        'session_id': session_id,
         'timestamp': time.time()
     }
     logger.warning(f"【{account_id}】账号异常: {EXCEPTION_TYPES.get(exception_type, exception_type)} - {message}")
@@ -1716,6 +1724,14 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                     password_login_sessions[session_id]['screenshot_path'] = actual_screenshot_path
                     password_login_sessions[session_id]['verification_url'] = None
                     password_login_sessions[session_id]['qr_code_url'] = None
+                    set_account_exception(
+                        account_id,
+                        'face_verification',
+                        message or '账号登录需要人工验证，请按截图提示完成验证',
+                        screenshot_path=actual_screenshot_path,
+                        action_type='screenshot',
+                        session_id=session_id
+                    )
                     log_with_user('info', f"人脸认证截图已保存: {session_id}, 路径: {actual_screenshot_path}", current_user)
                     
                     # 发送通知到用户配置的渠道
@@ -1779,6 +1795,14 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                     password_login_sessions[session_id]['verification_url'] = verification_url
                     password_login_sessions[session_id]['screenshot_path'] = None
                     password_login_sessions[session_id]['qr_code_url'] = None
+                    set_account_exception(
+                        account_id,
+                        'face_verification',
+                        message or '账号登录需要人工验证，请点击验证链接完成验证',
+                        action_type='verification_url',
+                        verification_url=verification_url,
+                        session_id=session_id
+                    )
                     log_with_user('info', f"人脸认证验证链接已保存: {session_id}, URL: {verification_url}", current_user)
                     
                     # 发送通知到用户配置的渠道
@@ -1853,17 +1877,37 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 if cookies_dict is None:
                     password_login_sessions[session_id]['status'] = 'failed'
                     password_login_sessions[session_id]['error'] = '登录失败，请检查账号密码是否正确'
+                    set_account_exception(
+                        account_id,
+                        'login_failed',
+                        '账号密码登录失败，请检查账号密码是否正确',
+                        action_type='password_login',
+                        session_id=session_id
+                    )
                     log_with_user('error', f"账号密码登录失败: {account_id}", current_user)
                     return
                 
                 # 将cookie字典转换为字符串格式
                 cookies_str = '; '.join([f"{k}={v}" for k, v in cookies_dict.items()])
                 
-                log_with_user('info', f"账号密码登录成功，获取到 {len(cookies_dict)} 个Cookie字段: {account_id}", current_user)
-                
-                # 检查是否已存在相同账号ID的Cookie
+                submitted_account_id = account_id
+                real_account_id = cookies_dict.get('unb') or submitted_account_id
+                account_id = real_account_id
+                log_with_user(
+                    'info',
+                    f"账号密码登录成功，提交账号ID: {submitted_account_id}, 真实账号ID: {real_account_id}, 获取到 {len(cookies_dict)} 个Cookie字段",
+                    current_user
+                )
+
+                # 检查是否已存在相同真实账号ID的Cookie
                 existing_cookies = db_manager.get_all_cookies(user_id)
                 is_new_account = account_id not in existing_cookies
+                if not is_new_account:
+                    log_with_user(
+                        'info',
+                        f"登录账号 {account} 获取到真实账号ID {account_id}，将覆盖已有账号 {account_id}",
+                        current_user
+                    )
                 
                 # 保存账号密码和Cookie到数据库
                 # 使用 update_cookie_account_info 来保存，它会自动处理新账号和现有账号的情况
@@ -1877,6 +1921,7 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 )
                 
                 if update_success:
+                    clear_account_exception(account_id)
                     if is_new_account:
                         log_with_user('info', f"新账号Cookie和账号密码已保存: {account_id}", current_user)
                     else:
@@ -1884,16 +1929,14 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 else:
                     log_with_user('error', f"保存账号信息失败: {account_id}", current_user)
                 
-                # 添加到或更新cookie_manager（注意：不要在这里调用add_cookie或update_cookie，因为它们会覆盖账号密码）
+                # 添加到或更新cookie_manager（注意：update_cookie 使用 save_to_db=False，避免覆盖账号密码）
                 # 账号密码已经在上面通过update_cookie_account_info保存了
-                # 这里只需要更新内存中的cookie值，不保存到数据库（避免覆盖账号密码）
                 if cookie_manager.manager:
-                    # 更新内存中的cookie值
-                    cookie_manager.manager.cookies[account_id] = cookies_str
-                    log_with_user('info', f"已更新cookie_manager中的Cookie（内存）: {account_id}", current_user)
-                    
                     # 如果是新账号，需要启动任务
                     if is_new_account:
+                        # 更新内存中的cookie值
+                        cookie_manager.manager.cookies[account_id] = cookies_str
+                        log_with_user('info', f"已更新cookie_manager中的Cookie（内存）: {account_id}", current_user)
                         # 使用异步方式启动任务，但不保存到数据库（避免覆盖账号密码）
                         try:
                             import asyncio
@@ -1920,6 +1963,9 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                             log_with_user('warning', f"启动新账号任务失败: {account_id}, 错误: {str(task_err)}", current_user)
                             import traceback
                             logger.error(traceback.format_exc())
+                    else:
+                        cookie_manager.manager.update_cookie(account_id, cookies_str, save_to_db=False)
+                        log_with_user('info', f"已覆盖账号 {account_id} 的Cookie并重启任务", current_user)
                 
                 # 登录成功后，调用_refresh_cookies_via_browser刷新Cookie
                 try:
@@ -1995,6 +2041,13 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 error_msg = str(e)
                 password_login_sessions[session_id]['status'] = 'failed'
                 password_login_sessions[session_id]['error'] = error_msg
+                set_account_exception(
+                    account_id,
+                    'login_failed',
+                    f'账号密码登录失败: {error_msg}',
+                    action_type='password_login',
+                    session_id=session_id
+                )
                 log_with_user('error', f"账号密码登录失败: {account_id}, 错误: {error_msg}", current_user)
                 logger.info(f"会话 {session_id} 状态已更新为 failed，错误消息: {error_msg}")  # 添加日志确认状态更新
                 import traceback
@@ -2079,6 +2132,7 @@ async def password_login(
         return {'success': False, 'message': f'登录失败: {str(e)}'}
 
 
+@app.get("/password-login/status/{session_id}")
 @app.get("/password-login/check/{session_id}")
 async def check_password_login_status(
     session_id: str,

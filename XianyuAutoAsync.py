@@ -209,6 +209,26 @@ class XianyuLive:
             except:
                 return "未知错误"
 
+    def _set_account_exception(self, exception_type: str, message: str, **kwargs):
+        """将关键账号异常同步到后台账号页。"""
+        try:
+            import sys
+            reply_server = sys.modules.get('reply_server')
+            if reply_server and hasattr(reply_server, 'set_account_exception'):
+                reply_server.set_account_exception(self.cookie_id, exception_type, message, **kwargs)
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】设置账号异常状态失败: {self._safe_str(e)}")
+
+    def _clear_account_exception(self):
+        """清除后台账号页异常状态。"""
+        try:
+            import sys
+            reply_server = sys.modules.get('reply_server')
+            if reply_server and hasattr(reply_server, 'clear_account_exception'):
+                reply_server.clear_account_exception(self.cookie_id)
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】清除账号异常状态失败: {self._safe_str(e)}")
+
     def _set_connection_state(self, new_state: ConnectionState, reason: str = ""):
         """设置连接状态并记录日志"""
         if self.connection_state != new_state:
@@ -2467,6 +2487,11 @@ class XianyuLive:
             bool: 是否成功刷新Cookie
         """
         logger.warning(f"【{self.cookie_id}】检测到{trigger_reason}，准备刷新Cookie并重启实例...")
+        self._set_account_exception(
+            "session_expired",
+            f"检测到{trigger_reason}，正在尝试自动刷新Cookie",
+            action_type="password_login"
+        )
 
         # 检查是否在密码登录冷却期内，避免重复登录
         current_time = time.time()
@@ -2509,6 +2534,11 @@ class XianyuLive:
             # 检查是否配置了用户名和密码
             if not username or not password:
                 logger.warning(f"【{self.cookie_id}】未配置用户名或密码，跳过密码登录刷新")
+                self._set_account_exception(
+                    "no_credentials",
+                    f"检测到{trigger_reason}，但未配置用户名或密码，无法自动刷新Cookie",
+                    action_type="missing_credentials"
+                )
                 await self.send_token_refresh_notification(
                     f"检测到{trigger_reason}，但未配置用户名或密码，无法自动刷新Cookie",
                     "no_credentials"
@@ -2524,6 +2554,13 @@ class XianyuLive:
             # 创建一个通知回调包装函数，支持接收截图路径和验证链接
             async def notification_callback_wrapper(message: str, screenshot_path: str = None, verification_url: str = None):
                 """通知回调包装函数，支持接收截图路径和验证链接"""
+                self._set_account_exception(
+                    "face_verification",
+                    message or "账号登录需要人工验证，请按提示完成验证",
+                    screenshot_path=screenshot_path,
+                    verification_url=verification_url,
+                    action_type="verification_url" if verification_url else "screenshot"
+                )
                 await self.send_token_refresh_notification(
                     error_message=message,
                     notification_type="token_refresh",
@@ -2604,6 +2641,7 @@ class XianyuLive:
                 
                 if update_success:
                     logger.info(f"【{self.cookie_id}】Cookie更新并重启任务成功")
+                    self._clear_account_exception()
                     # 发送账号密码登录成功通知
                     await self.send_token_refresh_notification(
                         f"账号密码登录成功，Cookie已更新，任务已重启",
@@ -2616,10 +2654,20 @@ class XianyuLive:
                     
             else:
                 logger.warning(f"【{self.cookie_id}】密码登录失败，未获取到Cookie")
+                self._set_account_exception(
+                    "login_failed",
+                    "密码登录失败，未获取到可用Cookie",
+                    action_type="password_login"
+                )
                 return False
 
         except Exception as refresh_e:
             logger.error(f"【{self.cookie_id}】Cookie刷新或实例重启失败: {self._safe_str(refresh_e)}")
+            self._set_account_exception(
+                "token_failed",
+                f"Cookie刷新或实例重启失败: {self._safe_str(refresh_e)}",
+                action_type="password_login"
+            )
             import traceback
             logger.error(f"【{self.cookie_id}】详细堆栈:\n{traceback.format_exc()}")
             return False
@@ -4520,11 +4568,18 @@ class XianyuLive:
         try:
             # 记录账号异常状态（用于前端显示）
             try:
-                from reply_server import set_account_exception
                 if notification_type == 'face_verification':
-                    set_account_exception(self.cookie_id, 'face_verification', error_message, attachment_path)
+                    self._set_account_exception(
+                        'face_verification',
+                        error_message,
+                        screenshot_path=attachment_path,
+                        verification_url=verification_url,
+                        action_type='verification_url' if verification_url else 'screenshot'
+                    )
                 elif notification_type in ['token_refresh_failed', 'token_init_failed', 'cookie_update_failed']:
-                    set_account_exception(self.cookie_id, 'cookie_expired', error_message)
+                    self._set_account_exception('cookie_expired', error_message, action_type='password_login')
+                elif notification_type == 'no_credentials':
+                    self._set_account_exception('no_credentials', error_message, action_type='missing_credentials')
             except Exception as e:
                 logger.debug(f"【{self.cookie_id}】记录异常状态失败: {e}")
             

@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
-import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Eye, EyeOff, AlertTriangle, AlertCircle } from 'lucide-react'
-import { getAccountDetails, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, getAllAIReplySettings, getAIReplySettings, updateAIReplySettings, toggleAIReply, updateAccountLoginInfo, getAllAccountExceptions, clearAccountException, type AIReplySettings, type AccountException } from '@/api/accounts'
-import { getKeywords, getDefaultReply, updateDefaultReply } from '@/api/keywords'
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { AlertCircle, AlertTriangle, Bot, CheckCircle, Clock, Edit2, Eye, EyeOff, Key, Loader2, MessageSquare, Plus, Power, PowerOff, QrCode, RefreshCw, Trash2, X } from 'lucide-react'
+import { type AccountException, addAccount, type AIReplySettings, checkPasswordLoginStatus, checkQRLoginStatus, clearAccountException, deleteAccount, generateQRLogin, getAccountDetails, getAIReplySettings, getAllAccountExceptions, getAllAIReplySettings, passwordLogin, toggleAIReply, updateAccountAutoConfirm, updateAccountCookie, updateAccountLoginInfo, updateAccountPauseDuration, updateAccountRemark, updateAccountStatus, updateAIReplySettings } from '@/api/accounts'
+import { getDefaultReply, getKeywords, updateDefaultReply } from '@/api/keywords'
 import { checkDefaultPassword } from '@/api/settings'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -22,7 +21,7 @@ export function Accounts() {
   const [loading, setLoading] = useState(true)
   const [accounts, setAccounts] = useState<AccountWithKeywordCount[]>([])
   const [activeModal, setActiveModal] = useState<ModalType>(null)
-  
+
   // 默认密码检查状态
   const [usingDefaultPassword, setUsingDefaultPassword] = useState(false)
   const [showPasswordWarning, setShowPasswordWarning] = useState(false)
@@ -43,6 +42,10 @@ export function Accounts() {
   const [pwdPassword, setPwdPassword] = useState('')
   const [pwdLoading, setPwdLoading] = useState(false)
   const [pwdShowBrowser, setPwdShowBrowser] = useState(false)
+  const [pwdStatusMessage, setPwdStatusMessage] = useState('')
+  const [pwdVerificationUrl, setPwdVerificationUrl] = useState<string | null>(null)
+  const [pwdScreenshotPath, setPwdScreenshotPath] = useState<string | null>(null)
+  const pwdCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // 手动输入状态
   const [manualAccountId, setManualAccountId] = useState('')
@@ -135,7 +138,7 @@ export function Accounts() {
   // 单独的 useEffect 检查默认密码
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token || !user) return
-    
+
     // 检查是否使用默认密码
     const checkPassword = async () => {
       if (user.is_admin) {
@@ -154,9 +157,17 @@ export function Accounts() {
     }
   }, [])
 
+  const clearPwdCheck = useCallback(() => {
+    if (pwdCheckIntervalRef.current) {
+      clearInterval(pwdCheckIntervalRef.current)
+      pwdCheckIntervalRef.current = null
+    }
+  }, [])
+
   // 关闭弹窗时清理
   const closeModal = useCallback(() => {
     clearQrCheck()
+    clearPwdCheck()
     setActiveModal(null)
     setQrCodeUrl('')
     setQrSessionId('')
@@ -164,10 +175,13 @@ export function Accounts() {
     setPwdAccount('')
     setPwdPassword('')
     setPwdLoading(false)
+    setPwdStatusMessage('')
+    setPwdVerificationUrl(null)
+    setPwdScreenshotPath(null)
     setManualAccountId('')
     setManualCookie('')
     setManualLoading(false)
-  }, [clearQrCheck])
+  }, [clearQrCheck, clearPwdCheck])
 
   // ==================== 账号异常状态 ====================
   const openExceptionModal = (accountId: string) => {
@@ -181,6 +195,48 @@ export function Accounts() {
   const closeExceptionModal = () => {
     setExceptionModalAccount(null)
     setExceptionModalData(null)
+  }
+
+  const getScreenshotUrl = (path?: string | null) => {
+    if (!path) return ''
+    if (path.startsWith('/')) return path
+    const normalized = path.replace(/\\/g, '/')
+    return `/static/uploads/images/${normalized.split('/').pop()}`
+  }
+
+  const handleExceptionAction = () => {
+    if (!exceptionModalAccount || !exceptionModalData) return
+
+    if (exceptionModalData.verification_url) {
+      window.open(exceptionModalData.verification_url, '_blank', 'noopener,noreferrer')
+      return
+    }
+
+    if (exceptionModalData.screenshot_path) {
+      window.open(getScreenshotUrl(exceptionModalData.screenshot_path), '_blank', 'noopener,noreferrer')
+      return
+    }
+
+    const account = accounts.find((item) => item.id === exceptionModalAccount)
+    if (exceptionModalData.action_type === 'missing_credentials' && account) {
+      closeExceptionModal()
+      openEditModal(account)
+      return
+    }
+
+    if (exceptionModalData.action_type === 'password_login') {
+      setPwdAccount(exceptionModalAccount)
+      setPwdPassword('')
+      setActiveModal('password')
+      closeExceptionModal()
+    }
+  }
+
+  const getExceptionActionLabel = (exception: AccountException) => {
+    if (exception.verification_url) return '打开验证页面'
+    if (exception.screenshot_path) return '查看验证截图'
+    if (exception.action_type === 'missing_credentials') return '填写账号密码'
+    return '重新登录'
   }
 
   const handleClearException = async () => {
@@ -204,7 +260,7 @@ export function Accounts() {
       setShowPasswordWarning(true)
       return
     }
-    
+
     setActiveModal('qrcode')
     setQrStatus('loading')
     try {
@@ -224,7 +280,7 @@ export function Accounts() {
       addToast({ type: 'error', message: '生成二维码失败' })
     }
   }
-  
+
   // 检查默认密码后打开弹窗
   const handleOpenModal = (modal: ModalType) => {
     if (usingDefaultPassword && (modal === 'password' || modal === 'manual')) {
@@ -305,6 +361,42 @@ export function Accounts() {
   }
 
   // ==================== 密码登录 ====================
+  const startPasswordLoginCheck = (sessionId: string) => {
+    clearPwdCheck()
+    pwdCheckIntervalRef.current = setInterval(async () => {
+      try {
+        const result = await checkPasswordLoginStatus(sessionId)
+        setPwdStatusMessage(result.message || '登录处理中，请稍候...')
+        setPwdVerificationUrl(result.verification_url || null)
+        setPwdScreenshotPath(result.screenshot_path || null)
+
+        if (result.status === 'verification_required') {
+          setPwdLoading(false)
+          loadAccounts()
+          return
+        }
+
+        if (result.status === 'success') {
+          clearPwdCheck()
+          setPwdLoading(false)
+          addToast({ type: 'success', message: result.message || '登录成功' })
+          closeModal()
+          loadAccounts()
+          return
+        }
+
+        if (result.status === 'failed' || result.status === 'error' || result.status === 'not_found' || result.status === 'forbidden') {
+          clearPwdCheck()
+          setPwdLoading(false)
+          addToast({ type: 'error', message: result.message || '登录失败' })
+          loadAccounts()
+        }
+      } catch {
+        setPwdStatusMessage('登录状态查询失败，请稍后刷新账号列表')
+      }
+    }, 2000)
+  }
+
   const handlePasswordLogin = async (e: FormEvent) => {
     e.preventDefault()
     if (!pwdAccount.trim() || !pwdPassword.trim()) {
@@ -313,6 +405,9 @@ export function Accounts() {
     }
 
     setPwdLoading(true)
+    setPwdStatusMessage('正在提交登录任务...')
+    setPwdVerificationUrl(null)
+    setPwdScreenshotPath(null)
     try {
       const result = await passwordLogin({
         account_id: pwdAccount.trim(),
@@ -322,15 +417,20 @@ export function Accounts() {
       })
       if (result.success) {
         addToast({ type: 'success', message: '登录请求已提交，请等待处理' })
-        closeModal()
-        // 延迟刷新列表
-        setTimeout(loadAccounts, 3000)
+        const sessionId = (result as { session_id?: string }).session_id
+        if (sessionId) {
+          setPwdStatusMessage('登录处理中，请保持此窗口打开')
+          startPasswordLoginCheck(sessionId)
+        } else {
+          setPwdStatusMessage('登录任务已提交，请稍后刷新账号列表')
+          setTimeout(loadAccounts, 3000)
+        }
       } else {
         addToast({ type: 'error', message: result.message || '登录失败' })
+        setPwdLoading(false)
       }
     } catch {
       addToast({ type: 'error', message: '登录请求失败' })
-    } finally {
       setPwdLoading(false)
     }
   }
@@ -433,11 +533,11 @@ export function Accounts() {
       }
 
       // 更新登录信息
-      const loginInfoChanged = 
+      const loginInfoChanged =
         editUsername !== (editingAccount.username || '') ||
         editLoginPassword !== (editingAccount.login_password || '') ||
         editShowBrowser !== (editingAccount.show_browser || false)
-      
+
       if (loginInfoChanged) {
         promises.push(updateAccountLoginInfo(editingAccount.id, {
           username: editUsername,
@@ -462,7 +562,7 @@ export function Accounts() {
     setDefaultReplyAccount(account)
     setDefaultReplyContent('')
     setActiveModal('default-reply')
-    
+
     // 加载当前默认回复
     try {
       const result = await getDefaultReply(account.id)
@@ -474,7 +574,7 @@ export function Accounts() {
 
   const handleSaveDefaultReply = async () => {
     if (!defaultReplyAccount) return
-    
+
     try {
       setDefaultReplySaving(true)
       await updateDefaultReply(defaultReplyAccount.id, defaultReplyContent, true)
@@ -580,7 +680,7 @@ export function Accounts() {
             {/* 扫码登录 */}
             <button
               onClick={startQRCodeLogin}
-              className="flex items-center gap-3 p-4 rounded-md border border-blue-200 dark:border-blue-800 
+              className="flex items-center gap-3 p-4 rounded-md border border-blue-200 dark:border-blue-800
                          bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors text-left"
             >
               <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
@@ -595,7 +695,7 @@ export function Accounts() {
             {/* 账号密码登录 */}
             <button
               onClick={() => handleOpenModal('password')}
-              className="flex items-center gap-3 p-4 rounded-md border border-slate-200 dark:border-slate-700 
+              className="flex items-center gap-3 p-4 rounded-md border border-slate-200 dark:border-slate-700
                          hover:border-blue-300 dark:hover:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors text-left"
             >
               <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center flex-shrink-0">
@@ -610,7 +710,7 @@ export function Accounts() {
             {/* 手动输入 */}
             <button
               onClick={() => handleOpenModal('manual')}
-              className="flex items-center gap-3 p-4 rounded-md border border-slate-200 dark:border-slate-700 
+              className="flex items-center gap-3 p-4 rounded-md border border-slate-200 dark:border-slate-700
                          hover:border-blue-300 dark:hover:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors text-left"
             >
               <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center flex-shrink-0">
@@ -677,7 +777,7 @@ export function Accounts() {
                             title={`异常: ${accountExceptions[account.id].type_name}`}
                           >
                             <AlertCircle className="w-3.5 h-3.5" />
-                            <span>异常</span>
+                            <span>{accountExceptions[account.id].type_name}</span>
                           </button>
                         )}
                       </div>
@@ -686,8 +786,8 @@ export function Accounts() {
                       <button
                         onClick={() => handleToggleAI(account)}
                         className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${
-                          account.aiEnabled 
-                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50' 
+                          account.aiEnabled
+                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'
                             : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
                         }`}
                         title={account.aiEnabled ? '点击关闭AI回复' : '点击开启AI回复'}
@@ -869,6 +969,37 @@ export function Accounts() {
                 <p className="input-hint">
                   登录过程可能需要进行人脸验证，请确保手机畅通
                 </p>
+                {pwdStatusMessage && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                    {pwdLoading && <Loader2 className="w-4 h-4 animate-spin inline mr-2" />}
+                    {pwdStatusMessage}
+                  </div>
+                )}
+                {(pwdVerificationUrl || pwdScreenshotPath) && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                    <p className="font-medium mb-2">需要人工验证</p>
+                    {pwdScreenshotPath && (
+                      <img
+                        src={getScreenshotUrl(pwdScreenshotPath)}
+                        alt="验证截图"
+                        className="mb-2 w-full rounded border border-amber-200 dark:border-amber-800"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (pwdVerificationUrl) {
+                          window.open(pwdVerificationUrl, '_blank', 'noopener,noreferrer')
+                        } else if (pwdScreenshotPath) {
+                          window.open(getScreenshotUrl(pwdScreenshotPath), '_blank', 'noopener,noreferrer')
+                        }
+                      }}
+                      className="btn-ios-primary btn-sm"
+                    >
+                      {pwdVerificationUrl ? '打开验证页面' : '查看验证截图'}
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="modal-footer">
                 <button type="button" onClick={closeModal} className="btn-ios-secondary" disabled={pwdLoading}>
@@ -1320,13 +1451,13 @@ export function Accounts() {
                   </div>
                 </div>
               </div>
-              
+
               {exceptionModalData.screenshot_path && (
                 <div className="mb-4">
                   <p className="text-slate-600 dark:text-slate-400 text-sm mb-2">验证截图:</p>
                   <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
-                    <img 
-                      src={`/uploads/images/${exceptionModalData.screenshot_path.split('/').pop()}`}
+                    <img
+                      src={getScreenshotUrl(exceptionModalData.screenshot_path)}
                       alt="验证截图"
                       className="w-full h-auto"
                       onError={(e) => {
@@ -1339,10 +1470,10 @@ export function Accounts() {
                   </p>
                 </div>
               )}
-              
+
               <div className="text-slate-600 dark:text-slate-400 text-sm">
                 {exceptionModalData.type === 'face_verification' && (
-                  <p>请使用闲鱼APP扫码完成人脸验证后，点击"清除异常"按钮。</p>
+                  <p>请完成闲鱼人脸/短信验证，验证通过后系统会继续更新 Cookie。</p>
                 )}
                 {exceptionModalData.type === 'slider_failed' && (
                   <p>滑块验证多次失败，请检查网络环境或稍后重试。</p>
@@ -1350,12 +1481,23 @@ export function Accounts() {
                 {exceptionModalData.type === 'cookie_expired' && (
                   <p>Cookie已过期，请重新登录获取新的Cookie。</p>
                 )}
+                {exceptionModalData.type === 'no_credentials' && (
+                  <p>该账号未保存登录账号或密码，请先补全账号密码后再重试。</p>
+                )}
+                {exceptionModalData.type === 'session_expired' && (
+                  <p>系统检测到 Session 过期，正在尝试自动恢复。若长期未恢复，请重新登录。</p>
+                )}
               </div>
             </div>
             <div className="modal-footer">
               <button onClick={closeExceptionModal} className="btn-ios-secondary">
                 关闭
               </button>
+              {(exceptionModalData.verification_url || exceptionModalData.screenshot_path || exceptionModalData.action_type) && (
+                <button onClick={handleExceptionAction} className="btn-ios-primary">
+                  {getExceptionActionLabel(exceptionModalData)}
+                </button>
+              )}
               <button onClick={handleClearException} className="btn-ios-primary bg-red-500 hover:bg-red-600">
                 清除异常
               </button>
