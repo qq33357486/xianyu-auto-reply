@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -92,6 +92,12 @@ def clear_account_exception(account_id: str):
 def get_account_exception(account_id: str):
     """获取账号异常状态"""
     return account_exceptions.get(account_id)
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {'1', 'true', 'yes', 'on'}
 
 # 不再需要单独的密码初始化，由数据库初始化时处理
 
@@ -1489,6 +1495,42 @@ def clear_single_account_exception(account_id: str, current_user: Dict[str, Any]
     
     clear_account_exception(account_id)
     return {'success': True, 'message': '异常状态已清除'}
+
+
+@app.get("/remote-browser/info")
+def get_remote_browser_info(request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取容器内浏览器远程接管入口"""
+    enabled = _env_bool('REMOTE_BROWSER_ENABLED', False)
+    try:
+        novnc_port = int(os.environ.get('NOVNC_PORT', '6080'))
+    except ValueError:
+        novnc_port = 6080
+    public_url = os.environ.get('REMOTE_BROWSER_PUBLIC_URL', '').strip()
+
+    if not public_url and enabled:
+        hostname = request.url.hostname or request.headers.get('host', '').split(':')[0]
+        scheme = request.url.scheme or 'http'
+        if hostname:
+            public_url = f"{scheme}://{hostname}:{novnc_port}/vnc.html?autoconnect=true&resize=remote"
+
+    vnc_password = os.environ.get('VNC_PASSWORD', '')
+    password_file = '/tmp/vnc_password'
+    if not vnc_password and os.path.exists(password_file):
+        try:
+            with open(password_file, 'r', encoding='utf-8') as f:
+                vnc_password = f.read().strip()
+        except Exception:
+            vnc_password = ''
+
+    return {
+        'enabled': enabled,
+        'url': public_url if enabled else None,
+        'display': os.environ.get('DISPLAY', ':99'),
+        'novnc_port': novnc_port,
+        'password_required': bool(vnc_password),
+        'password': vnc_password if enabled else None,
+        'message': '远程浏览器接管已启用' if enabled else '远程浏览器接管未启用'
+    }
 
 
 @app.post("/cookies")

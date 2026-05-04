@@ -76,11 +76,58 @@ fi
 
 echo "✓ 数据库文件位置检查完成"
 
+start_remote_browser() {
+    case "${REMOTE_BROWSER_ENABLED:-false}" in
+        true|1|yes|on) ;;
+        *)
+        echo "远程浏览器接管: 未启用"
+        return
+        ;;
+    esac
+
+    export DISPLAY="${DISPLAY:-:99}"
+    local geometry="${REMOTE_BROWSER_GEOMETRY:-1280x800x24}"
+    local vnc_port="${VNC_PORT:-5900}"
+    local novnc_port="${NOVNC_PORT:-6080}"
+
+    echo "启动远程浏览器接管环境..."
+    echo "  - DISPLAY: ${DISPLAY}"
+    echo "  - 分辨率: ${geometry}"
+    echo "  - noVNC端口: ${novnc_port}"
+
+    Xvfb "${DISPLAY}" -screen 0 "${geometry}" -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 &
+    sleep 1
+
+    fluxbox >/tmp/fluxbox.log 2>&1 &
+
+    if [ -z "${VNC_PASSWORD:-}" ]; then
+        VNC_PASSWORD="$(date +%s%N | sha256sum | cut -c1-16)"
+        export VNC_PASSWORD
+    fi
+    printf "%s" "${VNC_PASSWORD}" > /tmp/vnc_password
+    chmod 600 /tmp/vnc_password 2>/dev/null || true
+
+    if [ -n "${VNC_PASSWORD:-}" ]; then
+        x11vnc -display "${DISPLAY}" -forever -shared -passwd "${VNC_PASSWORD}" -listen 127.0.0.1 -rfbport "${vnc_port}" -quiet >/tmp/x11vnc.log 2>&1 &
+        echo "  - VNC密码: 已启用"
+    else
+        x11vnc -display "${DISPLAY}" -forever -shared -nopw -listen 127.0.0.1 -rfbport "${vnc_port}" -quiet >/tmp/x11vnc.log 2>&1 &
+        echo "  - VNC密码: 未设置"
+    fi
+
+    websockify --web=/usr/share/novnc/ "0.0.0.0:${novnc_port}" "127.0.0.1:${vnc_port}" >/tmp/novnc.log 2>&1 &
+    echo "✓ 远程浏览器接管已启动"
+}
+
+start_remote_browser
+
 # 显示启动信息
 echo "========================================"
 echo "  系统启动参数："
 echo "  - API端口: ${API_PORT:-8080}"
 echo "  - API主机: ${API_HOST:-0.0.0.0}"
+echo "  - 远程浏览器: ${REMOTE_BROWSER_ENABLED:-false}"
+echo "  - noVNC端口: ${NOVNC_PORT:-6080}"
 echo "  - Debug模式: ${DEBUG:-false}"
 echo "  - 自动重载: ${RELOAD:-false}"
 echo "========================================"

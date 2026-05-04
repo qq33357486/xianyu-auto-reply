@@ -116,6 +116,8 @@ RUN apt-get update && \
         xvfb \
         x11vnc \
         fluxbox \
+        novnc \
+        websockify \
         # OpenCV运行时依赖
         libgl1 \
         libglib2.0-0 \
@@ -146,7 +148,7 @@ RUN echo "ulimit -c 0" >> /etc/profile
 # 在生产环境中，建议配置适当的用户映射
 
 # 暴露端口
-EXPOSE 8080
+EXPOSE 8080 6080
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

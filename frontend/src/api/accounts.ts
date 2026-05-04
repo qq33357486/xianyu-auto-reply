@@ -237,3 +237,17 @@ export const getAccountException = (accountId: string): Promise<{
 export const clearAccountException = (accountId: string): Promise<ApiResponse> => {
   return del(`/accounts/${accountId}/exception`)
 }
+
+export interface RemoteBrowserInfo {
+  enabled: boolean
+  url?: string | null
+  display: string
+  novnc_port: number
+  password_required: boolean
+  password?: string | null
+  message: string
+}
+
+export const getRemoteBrowserInfo = (): Promise<RemoteBrowserInfo> => {
+  return get('/remote-browser/info')
+}

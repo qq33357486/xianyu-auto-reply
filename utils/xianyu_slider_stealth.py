@@ -329,6 +329,10 @@ class PlaywrightSingleton:
 
 def _should_force_headless() -> bool:
     """检测是否应该强制使用无头模式（Docker/无显示环境）"""
+    remote_browser_enabled = os.environ.get('REMOTE_BROWSER_ENABLED', '').lower() == 'true'
+    if remote_browser_enabled and os.environ.get('DISPLAY'):
+        return False
+
     # Docker 环境
     if os.path.exists('/.dockerenv') or os.environ.get('DOCKER_ENV'):
         return True

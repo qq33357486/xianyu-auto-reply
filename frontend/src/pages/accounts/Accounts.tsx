@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, AlertTriangle, Bot, CheckCircle, Clock, Edit2, Eye, EyeOff, Key, Loader2, MessageSquare, Plus, Power, PowerOff, QrCode, RefreshCw, Trash2, X } from 'lucide-react'
-import { type AccountException, addAccount, type AIReplySettings, checkPasswordLoginStatus, checkQRLoginStatus, clearAccountException, deleteAccount, generateQRLogin, getAccountDetails, getAIReplySettings, getAllAccountExceptions, getAllAIReplySettings, passwordLogin, toggleAIReply, updateAccountAutoConfirm, updateAccountCookie, updateAccountLoginInfo, updateAccountPauseDuration, updateAccountRemark, updateAccountStatus, updateAIReplySettings } from '@/api/accounts'
+import { type AccountException, addAccount, type AIReplySettings, checkPasswordLoginStatus, checkQRLoginStatus, clearAccountException, deleteAccount, generateQRLogin, getAccountDetails, getAIReplySettings, getAllAccountExceptions, getAllAIReplySettings, getRemoteBrowserInfo, passwordLogin, toggleAIReply, updateAccountAutoConfirm, updateAccountCookie, updateAccountLoginInfo, updateAccountPauseDuration, updateAccountRemark, updateAccountStatus, updateAIReplySettings } from '@/api/accounts'
 import { getDefaultReply, getKeywords, updateDefaultReply } from '@/api/keywords'
 import { checkDefaultPassword } from '@/api/settings'
 import { useUIStore } from '@/store/uiStore'
@@ -45,6 +45,7 @@ export function Accounts() {
   const [pwdStatusMessage, setPwdStatusMessage] = useState('')
   const [pwdVerificationUrl, setPwdVerificationUrl] = useState<string | null>(null)
   const [pwdScreenshotPath, setPwdScreenshotPath] = useState<string | null>(null)
+  const [remoteBrowserEnabled, setRemoteBrowserEnabled] = useState(false)
   const pwdCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // 手动输入状态
@@ -149,6 +150,21 @@ export function Accounts() {
     checkPassword()
   }, [_hasHydrated, isAuthenticated, token, user])
 
+  useEffect(() => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+
+    getRemoteBrowserInfo()
+      .then((info) => {
+        setRemoteBrowserEnabled(info.enabled)
+        if (info.enabled) {
+          setPwdShowBrowser(true)
+        }
+      })
+      .catch(() => {
+        setRemoteBrowserEnabled(false)
+      })
+  }, [_hasHydrated, isAuthenticated, token])
+
   // 清理扫码检查定时器
   const clearQrCheck = useCallback(() => {
     if (qrCheckIntervalRef.current) {
@@ -202,6 +218,22 @@ export function Accounts() {
     if (path.startsWith('/')) return path
     const normalized = path.replace(/\\/g, '/')
     return `/static/uploads/images/${normalized.split('/').pop()}`
+  }
+
+  const openRemoteBrowser = async () => {
+    try {
+      const info = await getRemoteBrowserInfo()
+      if (!info.enabled || !info.url) {
+        addToast({ type: 'warning', message: info.message || '远程浏览器接管未启用' })
+        return
+      }
+      window.open(info.url, '_blank', 'noopener,noreferrer')
+      if (info.password_required) {
+        addToast({ type: 'info', message: info.password ? `noVNC 密码：${info.password}` : 'noVNC 已打开，请输入部署环境中配置的 VNC_PASSWORD' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '获取远程浏览器入口失败' })
+    }
   }
 
   const handleExceptionAction = () => {
@@ -286,6 +318,9 @@ export function Accounts() {
     if (usingDefaultPassword && (modal === 'password' || modal === 'manual')) {
       setShowPasswordWarning(true)
       return
+    }
+    if (modal === 'password' && remoteBrowserEnabled) {
+      setPwdShowBrowser(true)
     }
     setActiveModal(modal)
   }
@@ -964,10 +999,10 @@ export function Accounts() {
                     onChange={(e) => setPwdShowBrowser(e.target.checked)}
                     className="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600"
                   />
-                  显示浏览器（调试用）
+                  显示浏览器（远程接管用）
                 </label>
                 <p className="input-hint">
-                  登录过程可能需要进行人脸验证，请确保手机畅通
+                  登录过程可能需要人脸/短信验证；{remoteBrowserEnabled ? '已默认开启远程接管浏览器。' : '线上接管时请勾选显示浏览器。'}
                 </p>
                 {pwdStatusMessage && (
                   <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
@@ -997,6 +1032,14 @@ export function Accounts() {
                       className="btn-ios-primary btn-sm"
                     >
                       {pwdVerificationUrl ? '打开验证页面' : '查看验证截图'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openRemoteBrowser}
+                      className="btn-ios-secondary btn-sm ml-2"
+                    >
+                      <Eye className="w-4 h-4" />
+                      远程接管浏览器
                     </button>
                   </div>
                 )}
@@ -1498,6 +1541,10 @@ export function Accounts() {
                   {getExceptionActionLabel(exceptionModalData)}
                 </button>
               )}
+              <button onClick={openRemoteBrowser} className="btn-ios-secondary">
+                <Eye className="w-4 h-4" />
+                远程接管浏览器
+              </button>
               <button onClick={handleClearException} className="btn-ios-primary bg-red-500 hover:bg-red-600">
                 清除异常
               </button>

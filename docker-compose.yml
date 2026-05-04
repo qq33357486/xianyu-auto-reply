@@ -7,6 +7,7 @@ services:
     init: true
     ports:
       - "8080:8080"
+      - "6080:6080"
     volumes:
       - ./data:/app/data:rw
       - ./logs:/app/logs:rw
@@ -24,6 +25,11 @@ services:
       - AUTO_REPLY_ENABLED=true
       - AUTO_DELIVERY_ENABLED=true
       - AI_REPLY_ENABLED=false
+      - REMOTE_BROWSER_ENABLED=true
+      - DISPLAY=:99
+      - NOVNC_PORT=6080
+      - VNC_PORT=5900
+      - VNC_PASSWORD=${VNC_PASSWORD:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 60s
